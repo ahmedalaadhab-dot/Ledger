@@ -140,14 +140,16 @@
 
   /* ---------- staging review ---------- */
   .stage-row{
-    display:grid;grid-template-columns:84px 1fr 90px 28px;gap:6px;align-items:center;
+    display:grid;grid-template-columns:78px 1fr 84px 110px 24px;gap:6px;align-items:center;
     padding:8px 0;border-bottom:1px dotted var(--line-strong);font-size:12.5px;
   }
+  .stage-row.flagged{background:rgba(182,69,46,0.06);border-radius:8px;}
   .stage-row input, .stage-row select{
     width:100%;border:1px solid var(--line);border-radius:6px;padding:5px 6px;font-size:12px;
     font-family:'IBM Plex Mono',monospace;background:#FCFBF7;
   }
   .stage-row select{font-family:'Inter',sans-serif;}
+  .stage-row select.flagged-select{border-color:var(--rust);color:var(--rust);font-weight:600;}
   .stage-row .desc-input{font-family:'Inter',sans-serif;}
   .stage-row .rm{
     border:none;background:none;color:var(--rust);font-size:16px;cursor:pointer;
@@ -223,6 +225,17 @@
   .empty{text-align:center;padding:40px 10px;color:var(--muted);}
   .empty .glyph{font-size:30px;margin-bottom:8px;}
 
+  .review-banner{
+    display:flex;align-items:center;gap:10px;background:rgba(182,69,46,0.08);
+    border:1px solid rgba(182,69,46,0.35);border-radius:12px;padding:10px 12px;margin-bottom:14px;
+  }
+  .review-banner .txt{flex:1;font-size:12.5px;color:var(--ink);}
+  .review-banner .txt b{color:var(--rust);}
+  .review-banner button{
+    font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:12px;border:none;
+    background:var(--rust);color:#fff;border-radius:8px;padding:7px 12px;cursor:pointer;
+  }
+
   /* ---------- insights ---------- */
   .summary-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px;}
   .sum-card{
@@ -291,6 +304,13 @@
   @media (max-width:380px){
     .summary-grid{grid-template-columns:1fr 1fr;}
     .summary-grid .sum-card:last-child{grid-column:span 2;}
+    .stage-row.stage-row-head{display:none;}
+    .stage-row{grid-template-columns:1fr 1fr;grid-template-areas:"date amt" "desc desc" "cat rm";row-gap:5px;}
+    .stage-row .f-date{grid-area:date;}
+    .stage-row .f-amt{grid-area:amt;}
+    .stage-row .f-desc{grid-area:desc;}
+    .stage-row .f-cat{grid-area:cat;}
+    .stage-row .rm{grid-area:rm;justify-self:end;}
   }
   :focus-visible{outline:2px solid var(--green);outline-offset:2px;}
 </style>
@@ -335,12 +355,13 @@
       </div>
       <input type="file" id="fileInput" multiple accept=".csv,.xls,.xlsx,.pdf">
       <div class="filelist" id="filelist"></div>
-      <p class="hint">Ledger reads each file on this device — nothing is uploaded anywhere. <b>CSV and Excel</b> statements parse most reliably. <b>PDF</b> statements are read with best-effort line detection, since every bank formats them differently — always check the review screen before confirming.</p>
+      <p class="hint">Ledger reads each file on this device — nothing is uploaded anywhere. <b>CSV and Excel</b> statements parse most reliably. <b>PDF</b> statements are read with best-effort line detection, since every bank formats them differently — always check the review screen before confirming. Anything Ledger can't confidently tag — generic transfers, unfamiliar merchants — is left <b>Uncategorized</b> and you'll be asked to pick a category for it.</p>
     </div>
 
     <div class="card" id="stagingCard" style="display:none;">
       <h2 class="section-title" style="margin-bottom:4px;"><span class="num">2</span>Review before adding</h2>
       <p class="hint" style="margin-top:0;">Fix any row that looks off, remove junk lines, then confirm to add them to your ledger.</p>
+      <p class="hint" id="stagingFlagHint" style="margin-top:0;color:var(--rust);font-weight:600;"></p>
       <div id="stagingRows"></div>
       <div class="stage-actions">
         <button class="btn ghost" id="stageCancel">Discard</button>
@@ -357,6 +378,7 @@
       <button class="btn ghost" id="exportBtn">Export CSV</button>
     </div>
     <div class="chip-row" id="catChips"></div>
+    <div id="reviewBanner"></div>
     <div id="txList"></div>
   </section>
 
@@ -465,11 +487,13 @@ const DEFAULT_CATEGORIES = {
   "Travel": ["airlines","gulf air","emirates","etihad","hotel","booking.com","airbnb","airport","trip.com"],
   "Education": ["school","university","tuition","course","udemy","books"],
   "Income": ["salary","payroll","income","refund","interest credit"],
-  "Transfers": ["transfer","fawri","benefitpay","cheque deposit","wire","funds transfer"],
+  "Transfers": ["fawri","benefitpay","cheque deposit","wire transfer","funds transfer","internal transfer"],
   "Cash Withdrawal": ["atm","cash withdrawal","cash wdl"],
   "Fees & Charges": ["fee","charge","commission","vat ","annual fee","service charge"],
   "Other": []
 };
+const UNCATEGORIZED = "Uncategorized";
+const UNCAT_COLOR = "#B6452E";
 
 /* ============ storage helpers ============ */
 async function loadState(){
@@ -586,7 +610,7 @@ function categorize(desc, amount){
     if(cat==="Other") continue;
     for(const kw of kws){ if(kw && d.includes(kw.toLowerCase())) return cat; }
   }
-  return amount>0 ? "Income" : "Other";
+  return UNCATEGORIZED;
 }
 
 /* ============ file parsing ============ */
@@ -758,19 +782,35 @@ function renderStaging(){
   const wrap = document.getElementById('stagingRows');
   if(staging.length===0){ card.style.display='none'; wrap.innerHTML=''; return; }
   card.style.display='block';
-  wrap.innerHTML = '<div class="stage-row" style="border-bottom:1px solid var(--line-strong);font-weight:600;color:var(--muted);font-size:11px;text-transform:uppercase;"><span>Date</span><span>Description</span><span>Amount</span><span></span></div>'
-    + staging.map(r=>`
-      <div class="stage-row" data-key="${r._key}">
+  const flaggedCount = staging.filter(r=>r.category===UNCATEGORIZED).length;
+  document.getElementById('stagingFlagHint').textContent = flaggedCount>0
+    ? flaggedCount+' row'+(flaggedCount===1?'':'s')+' weren\'t recognized — pick a category for the highlighted ones below.'
+    : '';
+  const catOptions = Object.keys(state.categories);
+  wrap.innerHTML = '<div class="stage-row stage-row-head" style="border-bottom:1px solid var(--line-strong);font-weight:600;color:var(--muted);font-size:11px;text-transform:uppercase;"><span>Date</span><span>Description</span><span>Amount</span><span>Category</span><span></span></div>'
+    + staging.map(r=>{
+      const flagged = r.category===UNCATEGORIZED;
+      return `
+      <div class="stage-row ${flagged?'flagged':''}" data-key="${r._key}">
         <input type="text" class="f-date" value="${escapeHtml(r.date)}" placeholder="YYYY-MM-DD">
         <input type="text" class="f-desc desc-input" value="${escapeHtml(r.description)}">
         <input type="number" step="0.001" class="f-amt" value="${r.amount.toFixed(3)}">
+        <select class="f-cat ${flagged?'flagged-select':''}">
+          ${flagged?`<option value="${UNCATEGORIZED}" selected>Uncategorized</option>`:''}
+          ${catOptions.map(c=>`<option value="${escapeHtml(c)}" ${r.category===c?'selected':''}>${escapeHtml(c)}</option>`).join('')}
+        </select>
         <button class="rm" title="Remove">×</button>
-      </div>`).join('');
+      </div>`;}).join('');
   wrap.querySelectorAll('.stage-row[data-key]').forEach(rowEl=>{
     const key = rowEl.dataset.key;
     rowEl.querySelector('.f-date').addEventListener('input',e=>{ findStage(key).date = e.target.value; });
     rowEl.querySelector('.f-desc').addEventListener('input',e=>{ findStage(key).description = e.target.value; });
     rowEl.querySelector('.f-amt').addEventListener('input',e=>{ findStage(key).amount = parseFloat(e.target.value)||0; });
+    rowEl.querySelector('.f-cat').addEventListener('change',e=>{
+      findStage(key).category = e.target.value;
+      e.target.classList.remove('flagged-select');
+      rowEl.classList.remove('flagged');
+    });
     rowEl.querySelector('.rm').addEventListener('click',()=>{ staging = staging.filter(s=>s._key!==key); renderStaging(); });
   });
 }
@@ -779,13 +819,16 @@ function findStage(key){ return staging.find(s=>s._key===key); }
 document.getElementById('stageCancel').addEventListener('click',()=>{ staging=[]; renderStaging(); document.getElementById('filelist').innerHTML=''; });
 document.getElementById('stageConfirm').addEventListener('click',()=>{
   let added=0, dup=0;
+  const newlyAdded = [];
   staging.forEach(r=>{
     const id = uid((r.date||"")+"|"+r.description+"|"+r.amount.toFixed(3));
     if(state.transactions.some(t=>t.id===id)){ dup++; return; }
-    state.transactions.push({
+    const tx = {
       id, date: r.date || "1970-01-01", description: r.description,
-      amount: r.amount, category: categorize(r.description,r.amount), source: r.source
-    });
+      amount: r.amount, category: r.category || UNCATEGORIZED, source: r.source
+    };
+    state.transactions.push(tx);
+    newlyAdded.push(tx);
     added++;
   });
   saveTransactions();
@@ -795,13 +838,16 @@ document.getElementById('stageConfirm').addEventListener('click',()=>{
   toast(added+' transaction'+(added===1?'':'s')+' added'+(dup?', '+dup+' duplicate skipped':''));
   renderAll();
   switchView('tx');
+  const needsReview = newlyAdded.filter(t=>t.category===UNCATEGORIZED).map(t=>t.id);
+  if(needsReview.length>0) startReviewQueue(needsReview);
 });
 
 /* ============ transactions list ============ */
 function renderCatChips(){
-  const cats = ['All', ...Object.keys(state.categories)];
+  const hasUncat = state.transactions.some(t=>t.category===UNCATEGORIZED);
+  const cats = ['All', ...(hasUncat?[UNCATEGORIZED]:[]), ...Object.keys(state.categories)];
   document.getElementById('catChips').innerHTML = cats.map(c=>
-    `<button class="chip ${txFilter.cat===c?'active':''}" data-cat="${escapeHtml(c)}">${escapeHtml(c)}</button>`
+    `<button class="chip ${txFilter.cat===c?'active':''}" data-cat="${escapeHtml(c)}" style="${c===UNCATEGORIZED?'color:'+UNCAT_COLOR+';border-color:'+UNCAT_COLOR+';':''}">${escapeHtml(c)}</button>`
   ).join('');
   document.querySelectorAll('#catChips .chip').forEach(b=>{
     b.addEventListener('click',()=>{ txFilter.cat = b.dataset.cat; renderTx(); renderCatChips(); });
@@ -809,6 +855,17 @@ function renderCatChips(){
 }
 function renderTx(){
   const list = document.getElementById('txList');
+  const banner = document.getElementById('reviewBanner');
+  const uncatIds = state.transactions.filter(t=>t.category===UNCATEGORIZED).map(t=>t.id);
+  if(uncatIds.length>0){
+    banner.innerHTML = `<div class="review-banner">
+        <span class="txt"><b>${uncatIds.length}</b> transaction${uncatIds.length===1?'':'s'} need a category</span>
+        <button id="reviewBtn">Review</button>
+      </div>`;
+    document.getElementById('reviewBtn').addEventListener('click',()=> startReviewQueue(uncatIds));
+  } else {
+    banner.innerHTML = '';
+  }
   let txs = [...state.transactions].sort((a,b)=> b.date.localeCompare(a.date));
   if(txFilter.cat!=='All') txs = txs.filter(t=>t.category===txFilter.cat);
   if(txFilter.q) txs = txs.filter(t=>t.description.toLowerCase().includes(txFilter.q.toLowerCase()));
@@ -840,13 +897,13 @@ function renderTx(){
 function txRowHtml(t){
   const d = new Date(t.date+"T00:00:00");
   const dateStr = isNaN(d.getTime()) ? t.date : d.toLocaleDateString(undefined,{day:'2-digit',month:'short'});
-  const color = state.catColor[t.category] || '#6B6F63';
+  const color = t.category===UNCATEGORIZED ? UNCAT_COLOR : (state.catColor[t.category] || '#6B6F63');
   return `<div class="tx-row">
     <div class="tx-date">${dateStr}</div>
     <div class="tx-perf"></div>
     <div class="tx-mid">
       <div class="tx-desc" title="${escapeHtml(t.description)}">${escapeHtml(t.description)}</div>
-      <span class="stamp" data-id="${t.id}" style="color:${color}">${escapeHtml(t.category)}</span>
+      <span class="stamp" data-id="${t.id}" style="color:${color}">${escapeHtml(t.category)}${t.category===UNCATEGORIZED?' ?':''}</span>
     </div>
     <div class="tx-amt ${t.amount>=0?'pos':'neg'}">${fmtMoney(t.amount)}</div>
   </div>`;
@@ -855,22 +912,53 @@ document.getElementById('txSearch').addEventListener('input',e=>{ txFilter.q = e
 
 /* category popover */
 let popoverTxId = null;
-function openCatPopover(txId){
+let reviewQueue = [];
+function startReviewQueue(ids){
+  reviewQueue = ids.filter(id=>{
+    const t = state.transactions.find(tx=>tx.id===id);
+    return t && t.category===UNCATEGORIZED;
+  });
+  advanceReviewQueue();
+}
+function advanceReviewQueue(){
+  if(reviewQueue.length===0){ closeCatPopover(); renderAll(); return; }
+  const id = reviewQueue.shift();
+  openCatPopover(id, true);
+}
+function openCatPopover(txId, sequential){
   popoverTxId = txId;
+  const tx = state.transactions.find(t=>t.id===txId);
+  const sheet = document.getElementById('catPopover').querySelector('.cat-sheet');
+  let header = sheet.querySelector('h3');
+  const remaining = sequential ? reviewQueue.length+1 : 0;
+  header.innerHTML = sequential
+    ? `What's this transaction? <span style="display:block;font-size:12px;color:var(--muted);font-weight:400;margin-top:3px;">${escapeHtml(tx?tx.description:'')} — ${remaining} left to review</span>`
+    : 'Set category';
   const list = document.getElementById('catOptList');
   list.innerHTML = Object.keys(state.categories).map(c=>
     `<div class="cat-opt" data-cat="${escapeHtml(c)}"><span class="sw" style="background:${state.catColor[c]}"></span>${escapeHtml(c)}</div>`
-  ).join('');
+  ).join('') + (sequential ? `<div class="cat-opt" data-cat="__skip" style="color:var(--muted);"><span class="sw" style="background:transparent;border:1px dashed var(--muted);"></span>Skip for now</div>` : '');
   list.querySelectorAll('.cat-opt').forEach(el=>{
     el.addEventListener('click',()=>{
-      const tx = state.transactions.find(t=>t.id===popoverTxId);
-      if(tx){ tx.category = el.dataset.cat; saveTransactions(); renderAll(); }
-      closeCatPopover();
+      if(el.dataset.cat!=='__skip'){
+        const t = state.transactions.find(tx=>tx.id===popoverTxId);
+        if(t){ t.category = el.dataset.cat; saveTransactions(); }
+      }
+      if(sequential){
+        renderAll();
+        advanceReviewQueue();
+      } else {
+        renderAll();
+        closeCatPopover();
+      }
     });
   });
   document.getElementById('catPopover').classList.add('open');
 }
-function closeCatPopover(){ document.getElementById('catPopover').classList.remove('open'); }
+function closeCatPopover(){
+  document.getElementById('catPopover').classList.remove('open');
+  reviewQueue = [];
+}
 document.getElementById('catPopover').addEventListener('click',e=>{ if(e.target.id==='catPopover') closeCatPopover(); });
 
 /* export */
