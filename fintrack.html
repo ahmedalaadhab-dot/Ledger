@@ -3,6 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="FinTrack">
+<meta name="theme-color" content="#4338CA">
 <title>FinTrack — Statement Tracker</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -358,7 +363,7 @@
       </div>
       <input type="file" id="fileInput" multiple accept=".csv,.xls,.xlsx,.pdf">
       <div class="filelist" id="filelist"></div>
-      <p class="hint">FinTrack reads each file on this device — nothing is uploaded anywhere. <b>CSV and Excel</b> statements parse most reliably. <b>PDF</b> statements are read with best-effort line detection, since every bank formats them differently — always check the review screen before confirming. Transfers (Fawri+, BenefitPay, wire) aren't auto-tagged since they're used for everything — the first transfer to an account asks for a category, then FinTrack remembers it for that account. Anything else it can't confidently tag is left <b>Uncategorized</b> and you'll be asked too.</p>
+      <p class="hint">FinTrack reads each file on this device and saves everything to a local database in your browser — nothing is uploaded anywhere. <b>CSV and Excel</b> statements parse most reliably. <b>PDF</b> statements are read with best-effort line detection, since every bank formats them differently — always check the review screen before confirming. Transfers (Fawri+, BenefitPay, wire) aren't auto-tagged since they're used for everything — the first transfer to an account asks for a category, then FinTrack remembers it for that account. Anything else it can't confidently tag is left <b>Uncategorized</b> and you'll be asked too.</p>
     </div>
 
     <div class="card">
@@ -509,39 +514,89 @@ const DEFAULT_CATEGORIES = {
 const UNCATEGORIZED = "Uncategorized";
 const UNCAT_COLOR = "#C026D3";
 
+/* ============ local database (IndexedDB, with localStorage fallback) ============
+   window.storage only exists inside Claude.ai's own preview sandbox - once this
+   file is self-hosted (GitHub Pages, home-screen app, etc.) that API doesn't
+   exist at all, so every save was silently failing. This is a real on-device
+   database that works in any browser, including standalone iOS web apps. */
+const DB_NAME = 'fintrack-db';
+const DB_STORE = 'kv';
+let _dbPromise = null;
+function openDB(){
+  if(_dbPromise) return _dbPromise;
+  _dbPromise = new Promise((resolve,reject)=>{
+    if(!window.indexedDB){ reject(new Error('indexedDB unavailable')); return; }
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = ()=>{
+      const db = req.result;
+      if(!db.objectStoreNames.contains(DB_STORE)) db.createObjectStore(DB_STORE);
+    };
+    req.onsuccess = ()=> resolve(req.result);
+    req.onerror = ()=> reject(req.error);
+  });
+  return _dbPromise;
+}
+function idbGet(key){
+  return openDB().then(db=> new Promise((resolve,reject)=>{
+    const tx = db.transaction(DB_STORE,'readonly');
+    const req = tx.objectStore(DB_STORE).get(key);
+    req.onsuccess = ()=> resolve(req.result);
+    req.onerror = ()=> reject(req.error);
+  }));
+}
+function idbSet(key,val){
+  return openDB().then(db=> new Promise((resolve,reject)=>{
+    const tx = db.transaction(DB_STORE,'readwrite');
+    tx.objectStore(DB_STORE).put(val,key);
+    tx.oncomplete = ()=> resolve(true);
+    tx.onerror = ()=> reject(tx.error);
+  }));
+}
+function idbDelete(key){
+  return openDB().then(db=> new Promise((resolve,reject)=>{
+    const tx = db.transaction(DB_STORE,'readwrite');
+    tx.objectStore(DB_STORE).delete(key);
+    tx.oncomplete = ()=> resolve(true);
+    tx.onerror = ()=> reject(tx.error);
+  }));
+}
+async function dbGet(key){
+  try{
+    const v = await idbGet(key);
+    if(v!==undefined) return v;
+  }catch(e){ /* fall through to localStorage */ }
+  try{
+    const raw = localStorage.getItem(key);
+    if(raw!==null) return JSON.parse(raw);
+  }catch(e){}
+  return undefined;
+}
+async function dbSet(key,val){
+  let ok = false;
+  try{ await idbSet(key,val); ok = true; }catch(e){}
+  try{ localStorage.setItem(key, JSON.stringify(val)); ok = true; }catch(e){}
+  return ok;
+}
+async function dbDelete(key){
+  try{ await idbDelete(key); }catch(e){}
+  try{ localStorage.removeItem(key); }catch(e){}
+}
+
 /* ============ storage helpers ============ */
 async function loadState(){
-  try{
-    const tx = await window.storage.get('ledger:transactions');
-    if(tx) state.transactions = JSON.parse(tx.value);
-  }catch(e){}
-  try{
-    const c = await window.storage.get('ledger:categories');
-    if(c) state.categories = JSON.parse(c.value);
-  }catch(e){}
-  try{
-    const b = await window.storage.get('ledger:budgets');
-    if(b) state.budgets = JSON.parse(b.value);
-  }catch(e){}
-  try{
-    const cur = await window.storage.get('ledger:currency');
-    if(cur) state.currency = JSON.parse(cur.value);
-  }catch(e){}
-  try{
-    const cc = await window.storage.get('ledger:catColor');
-    if(cc) state.catColor = JSON.parse(cc.value);
-  }catch(e){}
-  try{
-    const im = await window.storage.get('ledger:ibanMap');
-    if(im) state.ibanMap = JSON.parse(im.value);
-  }catch(e){}
+  try{ const tx = await dbGet('ledger:transactions'); if(tx) state.transactions = tx; }catch(e){}
+  try{ const c = await dbGet('ledger:categories'); if(c) state.categories = c; }catch(e){}
+  try{ const b = await dbGet('ledger:budgets'); if(b) state.budgets = b; }catch(e){}
+  try{ const cur = await dbGet('ledger:currency'); if(cur) state.currency = cur; }catch(e){}
+  try{ const cc = await dbGet('ledger:catColor'); if(cc) state.catColor = cc; }catch(e){}
+  try{ const im = await dbGet('ledger:ibanMap'); if(im) state.ibanMap = im; }catch(e){}
   if(!state.categories || Object.keys(state.categories).length===0){
     state.categories = JSON.parse(JSON.stringify(DEFAULT_CATEGORIES));
   }
   assignColors();
 }
 async function persist(key,val){
-  try{ await window.storage.set(key, JSON.stringify(val)); }catch(e){ /* storage unavailable, continue in-memory */ }
+  try{ await dbSet(key, val); }catch(e){ /* both stores unavailable - private/locked-down browser */ }
 }
 function saveTransactions(){ persist('ledger:transactions', state.transactions); }
 function saveCategories(){ persist('ledger:categories', state.categories); }
@@ -759,16 +814,27 @@ function parsePDFFile(file,row){
 // Heuristic PDF line -> transaction
 const PDF_NUM_RE = /-?\(?\d+(?:,\d{3})*\.\d{2,3}\)?(?:\s?(?:CR|DR))?/gi;
 const PDF_NUM_TEST_RE = /-?\(?\d+(?:,\d{3})*\.\d{2,3}\)?(?:\s?(?:CR|DR))?/i;
+const PDF_DATE_SRC = "\\d{1,2}[\\/\\-.]\\d{1,2}[\\/\\-.]\\d{2,4}|\\d{4}-\\d{1,2}-\\d{1,2}|\\d{1,2}\\s+[A-Za-z]{3,9}\\.?\\s+\\d{2,4}|[A-Za-z]{3,9}\\.?\\s+\\d{1,2},?\\s+\\d{2,4}";
+const PDF_DATE_RE = new RegExp("(?:"+PDF_DATE_SRC+")");
+const PDF_DATE_LEADING_RE = new RegExp("^(?:"+PDF_DATE_SRC+")");
+const PDF_DATE_GLOBAL_RE = new RegExp("(?:"+PDF_DATE_SRC+")","g");
 function linesToRows(lines){
-  const dateRe = /(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}|\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\s+[A-Za-z]{3,9}\.?\s+\d{2,4}|[A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{2,4})/;
   const out = [];
   lines.forEach(line=>{
-    const dm = line.match(dateRe);
+    const dm = line.match(PDF_DATE_RE);
     if(!dm) return;
     const date = parseDate(dm[0]);
     if(!date) return;
     const before = line.slice(0, dm.index).trim();
     let rest = line.slice(dm.index + dm[0].length).trim();
+    // many statements print a second "value date" right after the transaction
+    // date - strip any repeated leading date tokens so they don't get treated
+    // as the description
+    for(let guard=0; guard<3; guard++){
+      const lm = rest.match(PDF_DATE_LEADING_RE);
+      if(!lm) break;
+      rest = rest.slice(lm[0].length).trim();
+    }
     const nums = rest.match(PDF_NUM_RE) || [];
     if(nums.length===0) return;
     // when 3 numbers appear (debit, credit/empty, balance) the amount is usually
@@ -777,6 +843,9 @@ function linesToRows(lines){
     const amount = parseAmount(amtToken);
     if(amount===null) return;
     let desc = rest.replace(PDF_NUM_RE,"").replace(/\s+/g," ").trim();
+    if(desc && PDF_DATE_LEADING_RE.test(desc) && desc.replace(PDF_DATE_LEADING_RE,"").trim()===""){
+      desc = ""; // description is nothing but a leftover date - don't show that as the merchant
+    }
     if(!desc) desc = before || "Transaction";
     out.push({date, description:desc, amount});
   });
@@ -789,7 +858,7 @@ function fallbackRows(lines){
   return lines.filter(l=> l.length>3 && PDF_NUM_TEST_RE.test(l)).map(l=>{
     const nums = l.match(PDF_NUM_RE) || [];
     const amount = nums.length ? parseAmount(nums[nums.length-1]) : 0;
-    const desc = l.replace(PDF_NUM_RE,"").replace(/\s+/g," ").trim() || l;
+    const desc = l.replace(PDF_NUM_RE,"").replace(PDF_DATE_GLOBAL_RE,"").replace(/\s+/g," ").trim() || l;
     return {date:"", description: desc.slice(0,140), amount: amount||0};
   }).slice(0,300);
 }
