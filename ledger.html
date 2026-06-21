@@ -622,9 +622,11 @@ function parseDate(raw){
 }
 function extractIBAN(desc){
   if(!desc) return null;
-  const m = String(desc).match(/\b([A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7})\b/i);
+  // Bahrain IBAN: BH + 2 check digits + 4-letter bank code + 14-digit account number,
+  // optionally spaced in groups of 4 the way banks usually print it
+  const m = String(desc).match(/\bBH\s?\d{2}\s?[A-Z]{4}(?:\s?\d{4}){3}\s?\d{2}\b/i);
   if(!m) return null;
-  return m[1].replace(/\s+/g,'').toUpperCase();
+  return m[0].replace(/\s+/g,'').toUpperCase();
 }
 function categorize(desc, amount){
   const iban = extractIBAN(desc);
@@ -1126,22 +1128,35 @@ function renderBudgets(){
     const sp = spent[c] || 0;
     const pct = budget>0 ? Math.min(100,(sp/budget)*100) : 0;
     const over = budget>0 && sp>budget;
-    return `<div class="budget-row">
+    return `<div class="budget-row" data-cat="${escapeHtml(c)}">
       <div class="budget-top">
         <span class="name"><span class="sw" style="background:${state.catColor[c]}"></span>${escapeHtml(c)}</span>
-        <input type="number" class="budget-edit" data-cat="${escapeHtml(c)}" value="${budget||''}" placeholder="0.000" step="0.001">
+        <input type="number" inputmode="decimal" class="budget-edit" data-cat="${escapeHtml(c)}" value="${budget||''}" placeholder="0.000" step="0.001">
       </div>
       <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${over?'#B6452E':state.catColor[c]}"></div></div>
-      <div class="budget-foot"><span>${fmtMoney(-sp)} spent this month</span><span>${budget>0? Math.round(pct)+'%':'no budget set'}</span></div>
+      <div class="budget-foot"><span class="spent-lbl">${fmtMoney(-sp)} spent this month</span><span class="pct-lbl">${budget>0? Math.round(pct)+'%':'no budget set'}</span></div>
     </div>`;
   }).join('');
   wrap.querySelectorAll('.budget-edit').forEach(inp=>{
     inp.addEventListener('input',e=>{
-      state.budgets[e.target.dataset.cat] = parseFloat(e.target.value)||0;
+      const cat = e.target.dataset.cat;
+      state.budgets[cat] = parseFloat(e.target.value)||0;
       saveBudgets();
-      renderBudgets();
+      updateBudgetRowDisplay(cat, spent[cat]||0);
     });
   });
+}
+function updateBudgetRowDisplay(cat, sp){
+  let row = null;
+  document.querySelectorAll('#budgetList .budget-row').forEach(r=>{ if(r.dataset.cat===cat) row = r; });
+  if(!row) return;
+  const budget = state.budgets[cat] || 0;
+  const pct = budget>0 ? Math.min(100,(sp/budget)*100) : 0;
+  const over = budget>0 && sp>budget;
+  const fill = row.querySelector('.bar-fill');
+  fill.style.width = pct+'%';
+  fill.style.background = over ? '#B6452E' : (state.catColor[cat] || '#6B6F63');
+  row.querySelector('.pct-lbl').textContent = budget>0 ? Math.round(pct)+'%' : 'no budget set';
 }
 
 /* ============ rules ============ */
