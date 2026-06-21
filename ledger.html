@@ -355,7 +355,12 @@
       </div>
       <input type="file" id="fileInput" multiple accept=".csv,.xls,.xlsx,.pdf">
       <div class="filelist" id="filelist"></div>
-      <p class="hint">Ledger reads each file on this device — nothing is uploaded anywhere. <b>CSV and Excel</b> statements parse most reliably. <b>PDF</b> statements are read with best-effort line detection, since every bank formats them differently — always check the review screen before confirming. Anything Ledger can't confidently tag — generic transfers, unfamiliar merchants — is left <b>Uncategorized</b> and you'll be asked to pick a category for it.</p>
+      <p class="hint">Ledger reads each file on this device — nothing is uploaded anywhere. <b>CSV and Excel</b> statements parse most reliably. <b>PDF</b> statements are read with best-effort line detection, since every bank formats them differently — always check the review screen before confirming. Transfers (Fawri+, BenefitPay, wire) aren't auto-tagged since they're used for everything — the first transfer to an account asks for a category, then Ledger remembers it for that account. Anything else it can't confidently tag is left <b>Uncategorized</b> and you'll be asked too.</p>
+    </div>
+
+    <div class="card">
+      <h2 class="section-title" style="font-size:13px;">Statements on file</h2>
+      <div class="filelist" id="statementsList" style="margin-top:0;"></div>
     </div>
 
     <div class="card" id="stagingCard" style="display:none;">
@@ -412,6 +417,11 @@
   <section class="view" id="view-rules">
     <h2 class="section-title">Categorisation rules</h2>
     <p class="hint" style="margin-top:-6px;">New statements are auto-tagged by matching words in the description against these keywords. Add your own to improve accuracy.</p>
+    <div class="card">
+      <h2 class="section-title" style="font-size:13px;">Known transfer accounts</h2>
+      <p class="hint" style="margin-top:0;">Fawri+, BenefitPay and other transfers aren't auto-categorized since they're used for everything. Pick a category the first time you see one and Ledger remembers it for that IBAN.</p>
+      <div id="ibanRuleList"></div>
+    </div>
     <div id="ruleList"></div>
     <div class="card">
       <h2 class="section-title" style="font-size:13px;">New category</h2>
@@ -468,7 +478,8 @@ let state = {
   transactions: [],          // {id,date,description,amount,category,source}
   categories: {},            // name -> [keywords]
   budgets: {},                // name -> number
-  catColor: {}                // name -> color (assigned)
+  catColor: {},                // name -> color (assigned)
+  ibanMap: {}                  // IBAN -> category, learned from the first transfer to that account
 };
 let staging = [];             // rows pending review
 let activeView = "upload";
@@ -487,7 +498,7 @@ const DEFAULT_CATEGORIES = {
   "Travel": ["airlines","gulf air","emirates","etihad","hotel","booking.com","airbnb","airport","trip.com"],
   "Education": ["school","university","tuition","course","udemy","books"],
   "Income": ["salary","payroll","income","refund","interest credit"],
-  "Transfers": ["fawri","benefitpay","cheque deposit","wire transfer","funds transfer","internal transfer"],
+  "Transfers": [],
   "Cash Withdrawal": ["atm","cash withdrawal","cash wdl"],
   "Fees & Charges": ["fee","charge","commission","vat ","annual fee","service charge"],
   "Other": []
@@ -517,6 +528,10 @@ async function loadState(){
     const cc = await window.storage.get('ledger:catColor');
     if(cc) state.catColor = JSON.parse(cc.value);
   }catch(e){}
+  try{
+    const im = await window.storage.get('ledger:ibanMap');
+    if(im) state.ibanMap = JSON.parse(im.value);
+  }catch(e){}
   if(!state.categories || Object.keys(state.categories).length===0){
     state.categories = JSON.parse(JSON.stringify(DEFAULT_CATEGORIES));
   }
@@ -530,6 +545,7 @@ function saveCategories(){ persist('ledger:categories', state.categories); }
 function saveBudgets(){ persist('ledger:budgets', state.budgets); }
 function saveCurrency(){ persist('ledger:currency', state.currency); }
 function saveCatColor(){ persist('ledger:catColor', state.catColor); }
+function saveIbanMap(){ persist('ledger:ibanMap', state.ibanMap); }
 
 function assignColors(){
   let i = Object.keys(state.catColor).length;
@@ -604,13 +620,35 @@ function parseDate(raw){
   if(!isNaN(d.getTime())) return d.toISOString().slice(0,10);
   return "";
 }
+function extractIBAN(desc){
+  if(!desc) return null;
+  const m = String(desc).match(/\b([A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7})\b/i);
+  if(!m) return null;
+  return m[1].replace(/\s+/g,'').toUpperCase();
+}
 function categorize(desc, amount){
+  const iban = extractIBAN(desc);
+  if(iban && state.ibanMap[iban]) return state.ibanMap[iban];
   const d = (desc||"").toLowerCase();
   for(const [cat,kws] of Object.entries(state.categories)){
     if(cat==="Other") continue;
     for(const kw of kws){ if(kw && d.includes(kw.toLowerCase())) return cat; }
   }
   return UNCATEGORIZED;
+}
+function applyIbanMapping(iban, category){
+  state.ibanMap[iban] = category;
+  saveIbanMap();
+  let n = 0;
+  state.transactions.forEach(t=>{
+    if(extractIBAN(t.description)===iban){ t.category = category; n++; }
+  });
+  saveTransactions();
+  reviewQueue = reviewQueue.filter(id=>{
+    const t = state.transactions.find(tx=>tx.id===id);
+    return t && t.category===UNCATEGORIZED;
+  });
+  toast('Applied "'+category+'" to '+n+' transfer'+(n===1?'':'s')+' on this account');
 }
 
 /* ============ file parsing ============ */
@@ -671,22 +709,42 @@ function parsePDFFile(file,row){
     try{
       const pdf = await pdfjsLib.getDocument({data:new Uint8Array(e.target.result)}).promise;
       let lines = [];
+      let hadText = false;
       for(let p=1;p<=pdf.numPages;p++){
         const page = await pdf.getPage(p);
         const content = await page.getTextContent();
-        const byY = {};
+        if(content.items.length>0) hadText = true;
+        // bucket by y with tolerance so items that sit on slightly different
+        // baselines (common across PDF generators) still merge into one row
+        const buckets = []; // {y, items}
         content.items.forEach(it=>{
-          const y = Math.round(it.transform[5]);
-          (byY[y] = byY[y]||[]).push(it);
+          if(!it.str || !it.str.trim()) return;
+          const y = it.transform[5];
+          let b = buckets.find(bk=>Math.abs(bk.y-y)<=2.5);
+          if(!b){ b={y, items:[]}; buckets.push(b); }
+          b.items.push(it);
         });
-        Object.keys(byY).sort((a,b)=>b-a).forEach(y=>{
-          const lineItems = byY[y].sort((a,b)=>a.transform[4]-b.transform[4]);
+        buckets.sort((a,b)=>b.y-a.y).forEach(b=>{
+          const lineItems = b.items.sort((a,c)=>a.transform[4]-c.transform[4]);
           lines.push(lineItems.map(it=>it.str).join(" ").replace(/\s+/g," ").trim());
         });
       }
-      const txRows = linesToRows(lines.filter(l=>l));
-      ingestParsedRows(txRows, file.name);
-      setFileRow(row,'ok', staging.length+' rows staged (PDF — verify carefully)');
+      lines = lines.filter(l=>l);
+      let txRows = linesToRows(lines);
+      if(txRows.length>0){
+        ingestParsedRows(txRows, file.name);
+        setFileRow(row,'ok', txRows.length+' rows staged (PDF — verify carefully)');
+      } else if(!hadText){
+        setFileRow(row,'err','No selectable text found — this looks like a scanned/image PDF. Try exporting a CSV or Excel statement instead.');
+      } else {
+        const fallback = fallbackRows(lines);
+        if(fallback.length>0){
+          ingestParsedRows(fallback, file.name);
+          setFileRow(row,'ok', fallback.length+' line(s) staged — dates/amounts weren\'t auto-detected, please check each row');
+        } else {
+          setFileRow(row,'err','Could not find transaction lines in this PDF. Try CSV or Excel instead.');
+        }
+      }
     }catch(err){ setFileRow(row,'err','Could not parse PDF'); }
   };
   reader.onerror = ()=> setFileRow(row,'err','Could not read file');
@@ -694,27 +752,41 @@ function parsePDFFile(file,row){
 }
 
 // Heuristic PDF line -> transaction
+const PDF_NUM_RE = /-?\(?\d+(?:,\d{3})*\.\d{2,3}\)?(?:\s?(?:CR|DR))?/gi;
+const PDF_NUM_TEST_RE = /-?\(?\d+(?:,\d{3})*\.\d{2,3}\)?(?:\s?(?:CR|DR))?/i;
 function linesToRows(lines){
-  const dateRe = /^(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}|\d{1,2}\s+[A-Za-z]{3,9}\.?\s+\d{2,4}|[A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{2,4})/;
-  const numRe = /-?\(?\d[\d,]*\.\d{2}\)?(?:\s?(?:CR|DR))?/gi;
+  const dateRe = /(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}|\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\s+[A-Za-z]{3,9}\.?\s+\d{2,4}|[A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{2,4})/;
   const out = [];
   lines.forEach(line=>{
     const dm = line.match(dateRe);
     if(!dm) return;
     const date = parseDate(dm[0]);
     if(!date) return;
-    let rest = line.slice(dm[0].length).trim();
-    const nums = rest.match(numRe) || [];
+    const before = line.slice(0, dm.index).trim();
+    let rest = line.slice(dm.index + dm[0].length).trim();
+    const nums = rest.match(PDF_NUM_RE) || [];
     if(nums.length===0) return;
-    // amount = first numeric token found (closest to description); balance usually last if 2-3 nums present
+    // when 3 numbers appear (debit, credit/empty, balance) the amount is usually
+    // the second-to-last; with 2 numbers it's the first (amount, balance)
     let amtToken = nums.length>=2 ? nums[nums.length-2] : nums[nums.length-1];
     const amount = parseAmount(amtToken);
     if(amount===null) return;
-    let desc = rest.replace(numRe,"").replace(/\s+/g," ").trim();
-    if(!desc) desc = "Transaction";
+    let desc = rest.replace(PDF_NUM_RE,"").replace(/\s+/g," ").trim();
+    if(!desc) desc = before || "Transaction";
     out.push({date, description:desc, amount});
   });
   return out;
+}
+
+// Last resort: surface any line that contains a money-shaped number so the
+// user has something to fix instead of an empty import.
+function fallbackRows(lines){
+  return lines.filter(l=> l.length>3 && PDF_NUM_TEST_RE.test(l)).map(l=>{
+    const nums = l.match(PDF_NUM_RE) || [];
+    const amount = nums.length ? parseAmount(nums[nums.length-1]) : 0;
+    const desc = l.replace(PDF_NUM_RE,"").replace(/\s+/g," ").trim() || l;
+    return {date:"", description: desc.slice(0,140), amount: amount||0};
+  }).slice(0,300);
 }
 
 // CSV/XLSX rows (array of arrays) -> detect header + columns
@@ -928,12 +1000,16 @@ function advanceReviewQueue(){
 function openCatPopover(txId, sequential){
   popoverTxId = txId;
   const tx = state.transactions.find(t=>t.id===txId);
+  const iban = tx ? extractIBAN(tx.description) : null;
   const sheet = document.getElementById('catPopover').querySelector('.cat-sheet');
   let header = sheet.querySelector('h3');
   const remaining = sequential ? reviewQueue.length+1 : 0;
+  const ibanNote = iban
+    ? `<span style="display:block;font-size:11.5px;color:var(--green);font-weight:500;margin-top:6px;">Looks like a transfer to account •••${iban.slice(-4)} — the category you pick will be applied to every transfer to this account, from now on.</span>`
+    : '';
   header.innerHTML = sequential
-    ? `What's this transaction? <span style="display:block;font-size:12px;color:var(--muted);font-weight:400;margin-top:3px;">${escapeHtml(tx?tx.description:'')} — ${remaining} left to review</span>`
-    : 'Set category';
+    ? `What's this transaction? <span style="display:block;font-size:12px;color:var(--muted);font-weight:400;margin-top:3px;">${escapeHtml(tx?tx.description:'')} — ${remaining} left to review</span>${ibanNote}`
+    : `Set category${ibanNote}`;
   const list = document.getElementById('catOptList');
   list.innerHTML = Object.keys(state.categories).map(c=>
     `<div class="cat-opt" data-cat="${escapeHtml(c)}"><span class="sw" style="background:${state.catColor[c]}"></span>${escapeHtml(c)}</div>`
@@ -941,8 +1017,13 @@ function openCatPopover(txId, sequential){
   list.querySelectorAll('.cat-opt').forEach(el=>{
     el.addEventListener('click',()=>{
       if(el.dataset.cat!=='__skip'){
+        const chosen = el.dataset.cat;
         const t = state.transactions.find(tx=>tx.id===popoverTxId);
-        if(t){ t.category = el.dataset.cat; saveTransactions(); }
+        if(t){
+          const tIban = extractIBAN(t.description);
+          if(tIban){ applyIbanMapping(tIban, chosen); }
+          else { t.category = chosen; saveTransactions(); }
+        }
       }
       if(sequential){
         renderAll();
@@ -1115,6 +1196,71 @@ document.getElementById('addCatBtn').addEventListener('click',()=>{
   renderAll();
 });
 
+function renderIbanRules(){
+  const wrap = document.getElementById('ibanRuleList');
+  const ibans = Object.keys(state.ibanMap);
+  if(ibans.length===0){
+    wrap.innerHTML = '<p class="hint" style="margin:0;">No accounts learned yet.</p>';
+    return;
+  }
+  wrap.innerHTML = ibans.map(iban=>{
+    const cat = state.ibanMap[iban];
+    return `<div class="filerow" style="justify-content:space-between;">
+      <span class="dot" style="background:${state.catColor[cat]||'#6B6F63'}"></span>
+      <span class="name mono">•••${iban.slice(-6)}</span>
+      <span class="meta">${escapeHtml(cat)}</span>
+      <button class="btn danger" data-del-iban="${escapeHtml(iban)}" style="padding:4px 9px;font-size:11px;">Forget</button>
+    </div>`;
+  }).join('');
+  wrap.querySelectorAll('[data-del-iban]').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      delete state.ibanMap[btn.dataset.delIban];
+      saveIbanMap();
+      renderIbanRules();
+      toast('Account mapping forgotten — future transfers to it will ask again');
+    });
+  });
+}
+
+function renderStatements(){
+  const wrap = document.getElementById('statementsList');
+  if(!wrap) return;
+  const bySource = {};
+  state.transactions.forEach(t=>{
+    const src = t.source || 'Unknown';
+    if(!bySource[src]) bySource[src] = {count:0, min:t.date, max:t.date, total:0};
+    const s = bySource[src];
+    s.count++; s.total += t.amount;
+    if(t.date && t.date < s.min) s.min = t.date;
+    if(t.date && t.date > s.max) s.max = t.date;
+  });
+  const keys = Object.keys(bySource);
+  if(keys.length===0){
+    wrap.innerHTML = '<p class="hint" style="margin:0;">No statements added yet.</p>';
+    return;
+  }
+  wrap.innerHTML = keys.map(src=>{
+    const s = bySource[src];
+    return `<div class="filerow" style="justify-content:space-between;">
+      <span class="dot ok"></span>
+      <span class="name" title="${escapeHtml(src)}">${escapeHtml(src)}</span>
+      <span class="meta">${s.count} tx · ${fmtMoney(s.total)}</span>
+      <button class="btn danger" data-del-src="${escapeHtml(src)}" style="padding:4px 9px;font-size:11px;">Delete</button>
+    </div>`;
+  }).join('');
+  wrap.querySelectorAll('[data-del-src]').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      const src = btn.dataset.delSrc;
+      const n = state.transactions.filter(t=>t.source===src).length;
+      if(!confirm('Delete statement "'+src+'"? This removes '+n+' transaction'+(n===1?'':'s')+' from your ledger.')) return;
+      state.transactions = state.transactions.filter(t=>t.source!==src);
+      saveTransactions();
+      renderAll();
+      toast('Statement removed');
+    });
+  });
+}
+
 /* ============ view switching ============ */
 function switchView(name){
   activeView = name;
@@ -1123,8 +1269,9 @@ function switchView(name){
   document.querySelectorAll('nav.tabbar button').forEach(b=>b.classList.toggle('active', b.dataset.view===name));
   if(name==='insights') renderInsights();
   if(name==='budgets') renderBudgets();
-  if(name==='rules') renderRules();
+  if(name==='rules'){ renderRules(); renderIbanRules(); }
   if(name==='tx'){ renderCatChips(); renderTx(); }
+  if(name==='upload') renderStatements();
 }
 document.querySelectorAll('nav.tabbar button').forEach(b=> b.addEventListener('click',()=>switchView(b.dataset.view)));
 
@@ -1147,7 +1294,8 @@ function renderAll(){
   if(activeView==='tx') renderTx();
   if(activeView==='insights') renderInsights();
   if(activeView==='budgets') renderBudgets();
-  if(activeView==='rules') renderRules();
+  if(activeView==='rules'){ renderRules(); renderIbanRules(); }
+  if(activeView==='upload') renderStatements();
   // always refresh header totals
   const income = state.transactions.filter(t=>t.amount>0).reduce((s,t)=>s+t.amount,0);
   const expense = state.transactions.filter(t=>t.amount<0).reduce((s,t)=>s+t.amount,0);
@@ -1162,6 +1310,7 @@ function renderAll(){
   await loadState();
   document.getElementById('currencySelect').value = state.currency;
   renderAll();
+  renderStatements();
 })();
 </script>
 </body>
