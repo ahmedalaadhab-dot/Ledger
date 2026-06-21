@@ -790,7 +790,8 @@ function parsePDFFile(file,row){
         });
       }
       lines = lines.filter(l=>l);
-      let txRows = linesToRows(lines);
+      let txRows = blocksToRows(lines);
+      if(txRows.length===0) txRows = linesToRows(lines);
       if(txRows.length>0){
         ingestParsedRows(txRows, file.name);
         setFileRow(row,'ok', txRows.length+' rows staged (PDF — verify carefully)');
@@ -809,6 +810,56 @@ function parsePDFFile(file,row){
   };
   reader.onerror = ()=> setFileRow(row,'err','Could not read file');
   reader.readAsArrayBuffer(file);
+}
+
+// Some statements (e.g. Al Salam Bank) lay each transaction out across several
+// PDF text lines - a reference code, then wrapped description text, then a
+// separate line carrying the amount (written as "(+) 1.000" / "(-) 8.250"),
+// balance and dates. The single-line parser below can't see across that, so
+// this groups lines into blocks ending at each explicit signed-amount line,
+// then pulls the date/amount from anywhere in the block and treats the rest
+// of the text (minus reference codes and account numbers) as the description.
+const PDF_SIGNED_AMOUNT_RE = /\(?\s*([+\-])\s*\)?\s*(\d+(?:,\d{3})*\.\d{2,3})/;
+const PDF_BOILERPLATE_RE = /opening balance|closing balance|statement of account|total credit|total debit|generated statement|licensed and regulated/i;
+const PDF_REF_CODE_RE = /^FT[0-9A-Z]{4,}$/i;
+const PDF_ACCTNUM_RE = /^\d{4,}(-\d+)?$/;
+function blocksToRows(lines){
+  const amountLineIdx = [];
+  lines.forEach((l,i)=>{ if(PDF_SIGNED_AMOUNT_RE.test(l)) amountLineIdx.push(i); });
+  const out = [];
+  let blockStart = 0;
+  amountLineIdx.forEach(endIdx=>{
+    const blockLines = lines.slice(blockStart, endIdx+1);
+    blockStart = endIdx+1;
+    const blockText = blockLines.join(" ");
+    if(PDF_BOILERPLATE_RE.test(blockText)) return;
+    const sm = blockText.match(PDF_SIGNED_AMOUNT_RE);
+    if(!sm) return;
+    const amount = parseAmount(sm[2]) * (sm[1]==='-' ? -1 : 1);
+    const dm = blockText.match(PDF_DATE_RE);
+    if(!dm) return;
+    const date = parseDate(dm[0]);
+    if(!date) return;
+    let desc = blockText
+      .replace(PDF_SIGNED_AMOUNT_RE," ")
+      .replace(PDF_DATE_GLOBAL_RE," ")
+      .replace(PDF_NUM_RE," ")
+      .split(/\s+/)
+      .filter(tok=>{
+        if(!tok) return false;
+        if(extractIBAN(tok)) return true; // never drop IBANs - needed for transfer categorization
+        if(PDF_REF_CODE_RE.test(tok)) return false;
+        if(PDF_ACCTNUM_RE.test(tok)) return false;
+        return true;
+      })
+      .join(" ")
+      .replace(/[(),]+/g," ")
+      .replace(/\s+/g," ")
+      .trim();
+    if(!desc) desc = "Transaction";
+    out.push({date, description:desc, amount});
+  });
+  return out;
 }
 
 // Heuristic PDF line -> transaction
