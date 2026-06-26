@@ -218,7 +218,8 @@
   .tx-date{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--muted);line-height:1.2;}
   .tx-perf{border-left:1px dotted var(--line-strong);height:100%;}
   .tx-mid{min-width:0;}
-  .tx-desc{font-size:13.5px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .tx-desc{font-size:13.5px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;}
+  .tx-desc:active{opacity:0.6;}
   .stamp{
     display:inline-flex;align-items:center;gap:5px;margin-top:4px;
     font-size:10px;font-family:'IBM Plex Mono',monospace;letter-spacing:0.2px;font-weight:600;
@@ -511,6 +512,17 @@
     <div style="display:flex;gap:10px;margin-top:14px;">
       <button class="btn ghost" id="insCatAllBtn">Select all</button>
       <button class="btn primary block" id="insCatApplyBtn">Apply</button>
+    </div>
+  </div>
+</div>
+
+<div class="cat-popover" id="txDetailPopover">
+  <div class="cat-sheet">
+    <h3>Transaction</h3>
+    <div id="txDetailBody" style="font-size:13.5px;line-height:1.6;color:var(--ink);"></div>
+    <div style="display:flex;gap:10px;margin-top:14px;">
+      <button class="btn ghost" id="txDetailCloseBtn" style="flex:1;">Close</button>
+      <button class="btn primary" id="txDetailCatBtn" style="flex:1;">Change category</button>
     </div>
   </div>
 </div>
@@ -1166,6 +1178,9 @@ function attachStampListeners(){
   document.querySelectorAll('#txList .stamp').forEach(el=>{
     el.addEventListener('click',()=> openCatPopover(el.dataset.id));
   });
+  document.querySelectorAll('#txList .tx-desc').forEach(el=>{
+    el.addEventListener('click',()=> openTxDetail(el.dataset.id));
+  });
 }
 function renderTx(){
   const list = document.getElementById('txList');
@@ -1220,11 +1235,17 @@ function txRowHtml(t){
     <div class="tx-date">${dateStr}</div>
     <div class="tx-perf"></div>
     <div class="tx-mid">
-      <div class="tx-desc" title="${escapeHtml(t.description)}">${escapeHtml(t.description)}</div>
+      <div class="tx-desc" data-id="${t.id}" title="Tap for details">${escapeHtml(t.description)}</div>
       <span class="stamp" data-id="${t.id}" style="color:${color};background:${color}19;border-color:${color}40;">${escapeHtml(t.category)}${t.category===UNCATEGORIZED?' ?':''}</span>
     </div>
     <div class="tx-amt ${t.amount>=0?'pos':'neg'}">${fmtMoney(t.amount)}</div>
   </div>`;
+}
+function txContextLine(tx){
+  if(!tx) return '';
+  const d = new Date(tx.date+"T00:00:00");
+  const dateStr = isNaN(d.getTime()) ? tx.date : d.toLocaleDateString(undefined,{day:'2-digit',month:'short',year:'numeric'});
+  return dateStr+' · '+fmtMoney(tx.amount);
 }
 document.getElementById('txSearch').addEventListener('input',e=>{ txFilter.q = e.target.value; renderTx(); });
 document.getElementById('txSort').addEventListener('change',e=>{ txFilter.sort = e.target.value; renderTx(); });
@@ -1261,9 +1282,12 @@ function openCatPopover(txId, sequential){
   const ibanNote = iban
     ? `<span style="display:block;font-size:11.5px;color:var(--green);font-weight:500;margin-top:6px;">Looks like a transfer to account •••${iban.slice(-4)} — the category you pick will be applied to every transfer to this account, from now on.</span>`
     : '';
+  const contextLine = tx
+    ? `<span style="display:block;font-size:12px;color:var(--muted);font-weight:400;margin-top:3px;">${escapeHtml(tx.description)}<br><span class="mono" style="font-size:11.5px;">${escapeHtml(txContextLine(tx))}</span>${sequential?' — '+remaining+' left to review':''}</span>`
+    : '';
   header.innerHTML = sequential
-    ? `What's this transaction? <span style="display:block;font-size:12px;color:var(--muted);font-weight:400;margin-top:3px;">${escapeHtml(tx?tx.description:'')} — ${remaining} left to review</span>${ibanNote}`
-    : `Set category${ibanNote}`;
+    ? `What's this transaction?${contextLine}${ibanNote}`
+    : `Set category${contextLine}${ibanNote}`;
   const list = document.getElementById('catOptList');
   list.innerHTML = Object.keys(state.categories).map(c=>
     `<div class="cat-opt" data-cat="${escapeHtml(c)}"><span class="sw" style="background:${state.catColor[c]}"></span>${escapeHtml(c)}</div>`
@@ -1295,6 +1319,52 @@ function closeCatPopover(){
   reviewQueue = [];
 }
 document.getElementById('catPopover').addEventListener('click',e=>{ if(e.target.id==='catPopover') closeCatPopover(); });
+
+/* transaction detail sheet */
+let txDetailId = null;
+function openTxDetail(txId){
+  const tx = state.transactions.find(t=>t.id===txId);
+  if(!tx) return;
+  txDetailId = txId;
+  const d = new Date(tx.date+"T00:00:00");
+  const dateStr = isNaN(d.getTime()) ? tx.date : d.toLocaleDateString(undefined,{weekday:'short',day:'2-digit',month:'short',year:'numeric'});
+  const color = tx.category===UNCATEGORIZED ? UNCAT_COLOR : (state.catColor[tx.category] || '#6C6B8C');
+  const iban = extractIBAN(tx.description);
+  document.getElementById('txDetailBody').innerHTML = `
+    <div style="margin-bottom:10px;word-break:break-word;">${escapeHtml(tx.description)}</div>
+    <div style="display:flex;justify-content:space-between;padding:7px 0;border-top:1px dotted var(--line-strong);">
+      <span style="color:var(--muted);">Amount</span>
+      <span class="mono" style="font-weight:600;color:${tx.amount>=0?'var(--blue)':'var(--rust)'};">${fmtMoney(tx.amount)}</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;padding:7px 0;border-top:1px dotted var(--line-strong);">
+      <span style="color:var(--muted);">Date</span>
+      <span class="mono">${dateStr}</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;padding:7px 0;border-top:1px dotted var(--line-strong);">
+      <span style="color:var(--muted);">Category</span>
+      <span class="mono" style="color:${color};">${escapeHtml(tx.category)}</span>
+    </div>
+    ${iban ? `<div style="display:flex;justify-content:space-between;padding:7px 0;border-top:1px dotted var(--line-strong);">
+      <span style="color:var(--muted);">Account (IBAN)</span>
+      <span class="mono">${escapeHtml(iban)}</span>
+    </div>` : ''}
+    ${tx.source ? `<div style="display:flex;justify-content:space-between;padding:7px 0;border-top:1px dotted var(--line-strong);">
+      <span style="color:var(--muted);">Source</span>
+      <span class="mono" style="font-size:11.5px;text-align:right;word-break:break-all;">${escapeHtml(tx.source)}</span>
+    </div>` : ''}
+  `;
+  document.getElementById('txDetailPopover').classList.add('open');
+}
+document.getElementById('txDetailCloseBtn').addEventListener('click',()=>{
+  document.getElementById('txDetailPopover').classList.remove('open');
+});
+document.getElementById('txDetailCatBtn').addEventListener('click',()=>{
+  document.getElementById('txDetailPopover').classList.remove('open');
+  if(txDetailId) openCatPopover(txDetailId);
+});
+document.getElementById('txDetailPopover').addEventListener('click',e=>{
+  if(e.target.id==='txDetailPopover') document.getElementById('txDetailPopover').classList.remove('open');
+});
 
 /* export */
 document.getElementById('exportBtn').addEventListener('click',()=>{
