@@ -1185,7 +1185,7 @@ function ingestTable(rows, filename){
         const t = String(r[col.type]||"").toLowerCase();
         if((t.includes('debit')||t.includes('dr')||t.includes('withdraw')) && amount>0) amount = -amount;
       }
-      if(amount!==null && isCardStatement && amount>0) amount = -amount;
+      if(amount!==null && isCardStatement) amount = -amount;
     }
     if(!date && !descRaw) return;
     if(amount===null) return;
