@@ -529,6 +529,8 @@
       <button class="btn ghost" id="insCatAllBtn">Select all</button>
       <button class="btn primary block" id="insCatApplyBtn">Apply</button>
     </div>
+    <button class="btn ghost" id="insCatDefaultBtn" style="width:100%;margin-top:10px;font-size:12px;">Set as default</button>
+    <p class="hint" id="insCatDefaultHint" style="margin:6px 0 0;text-align:center;"></p>
   </div>
 </div>
 
@@ -581,7 +583,8 @@ let state = {
   categories: {},            // name -> [keywords]
   budgets: {},                // name -> number
   catColor: {},                // name -> color (assigned)
-  ibanMap: {}                  // IBAN -> category, learned from the first transfer to that account
+  ibanMap: {},                  // IBAN -> category, learned from the first transfer to that account
+  insDefaultCats: null          // array of category names saved as the Insights chart's default selection (null = all)
 };
 let staging = [];             // rows pending review
 let activeView = "upload";
@@ -718,10 +721,17 @@ async function loadState(){
   try{ const cur = await dbGet('ledger:currency'); if(cur) state.currency = cur; }catch(e){}
   try{ const cc = await dbGet('ledger:catColor'); if(cc) state.catColor = cc; }catch(e){}
   try{ const im = await dbGet('ledger:ibanMap'); if(im) state.ibanMap = im; }catch(e){}
+  try{ const dc = await dbGet('ledger:insDefaultCats'); if(dc) state.insDefaultCats = dc; }catch(e){}
   if(!state.categories || Object.keys(state.categories).length===0){
     state.categories = JSON.parse(JSON.stringify(DEFAULT_CATEGORIES));
   }
   assignColors();
+  if(state.insDefaultCats && Array.isArray(state.insDefaultCats)){
+    const allCats = Object.keys(state.categories).filter(c=>c!=='Income');
+    insightsFilter.cats = (state.insDefaultCats.length===0 || state.insDefaultCats.length===allCats.length)
+      ? null
+      : new Set(state.insDefaultCats.filter(c=>allCats.includes(c)));
+  }
 }
 async function persist(key,val){
   try{ await dbSet(key, val); }catch(e){ /* both stores unavailable - private/locked-down browser */ }
@@ -732,6 +742,7 @@ function saveBudgets(){ persist('ledger:budgets', state.budgets); }
 function saveCurrency(){ persist('ledger:currency', state.currency); }
 function saveCatColor(){ persist('ledger:catColor', state.catColor); }
 function saveIbanMap(){ persist('ledger:ibanMap', state.ibanMap); }
+function saveInsDefaultCats(){ persist('ledger:insDefaultCats', state.insDefaultCats); }
 
 function assignColors(){
   let i = Object.keys(state.catColor).length;
@@ -1600,6 +1611,7 @@ document.getElementById('insCatBtn').addEventListener('click',()=>{
     const checked = !insightsFilter.cats || insightsFilter.cats.has(c);
     return `<label class="cat-opt"><input type="checkbox" data-cat="${escapeHtml(c)}" ${checked?'checked':''}><span class="sw" style="background:${state.catColor[c]}"></span>${escapeHtml(c)}</label>`;
   }).join('');
+  updateInsCatDefaultHint();
   document.getElementById('insCatPopover').classList.add('open');
 });
 document.getElementById('insCatAllBtn').addEventListener('click',()=>{
@@ -1611,6 +1623,22 @@ document.getElementById('insCatApplyBtn').addEventListener('click',()=>{
   insightsFilter.cats = (checked.length===0 || checked.length===allCats.length) ? null : new Set(checked);
   document.getElementById('insCatPopover').classList.remove('open');
   renderInsights();
+});
+function updateInsCatDefaultHint(){
+  const hint = document.getElementById('insCatDefaultHint');
+  if(!hint) return;
+  const allCats = Object.keys(state.categories).filter(c=>c!=='Income');
+  if(!state.insDefaultCats) hint.textContent = '';
+  else if(state.insDefaultCats.length===0 || state.insDefaultCats.length===allCats.length) hint.textContent = 'Default: all categories';
+  else hint.textContent = 'Default: '+state.insDefaultCats.length+' selected';
+}
+document.getElementById('insCatDefaultBtn').addEventListener('click',()=>{
+  const allCats = Object.keys(state.categories).filter(c=>c!=='Income');
+  const checked = [...document.querySelectorAll('#insCatOptList input[type=checkbox]:checked')].map(cb=>cb.dataset.cat);
+  state.insDefaultCats = (checked.length===0 || checked.length===allCats.length) ? [] : checked;
+  saveInsDefaultCats();
+  updateInsCatDefaultHint();
+  toast('Saved as the default category selection');
 });
 document.getElementById('insCatPopover').addEventListener('click',e=>{ if(e.target.id==='insCatPopover') document.getElementById('insCatPopover').classList.remove('open'); });
 
