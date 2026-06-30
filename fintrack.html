@@ -203,6 +203,16 @@
   .custom-range-row .to-lbl{color:var(--muted);font-size:12px;flex:none;}
   .cat-opt label, label.cat-opt{display:flex;align-items:center;gap:10px;width:100%;}
   .cat-opt input[type=checkbox]{width:16px;height:16px;accent-color:var(--green);flex:none;}
+  .seg-toggle{
+    display:flex;background:var(--paper);border:1px solid var(--line);border-radius:10px;
+    padding:3px;margin-bottom:14px;gap:3px;
+  }
+  .seg-opt{
+    flex:1;border:none;background:transparent;border-radius:7px;padding:7px 0;
+    font-family:'Inter',sans-serif;font-size:12.5px;font-weight:500;color:var(--muted);
+    cursor:pointer;
+  }
+  .seg-opt.active{background:#fff;color:var(--ink);box-shadow:0 1px 4px rgba(0,0,0,0.08);font-weight:600;}
 
   .month-group{margin-bottom:18px;}
   .month-head{
@@ -461,6 +471,10 @@
         <input type="date" id="insTo">
       </div>
       <button class="btn ghost" id="insCatBtn" style="margin-bottom:12px;width:100%;">Categories: All</button>
+      <div class="seg-toggle" id="insModeToggle" role="tablist" aria-label="Display mode">
+        <button type="button" class="seg-opt active" data-mode="amount" role="tab" aria-selected="true">Amount</button>
+        <button type="button" class="seg-opt" data-mode="percent" role="tab" aria-selected="false">Percentage</button>
+      </div>
       <canvas id="catChart" height="220"></canvas>
       <div class="legend-list" id="catLegend"></div>
     </div>
@@ -570,7 +584,7 @@ let state = {
 let staging = [];             // rows pending review
 let activeView = "upload";
 let txFilter = { cat: "All", q: "", sort: "date_desc", range: "all", from: "", to: "" };
-let insightsFilter = { range: "month", from: "", to: "", cats: null }; // cats: null = all categories
+let insightsFilter = { range: "month", from: "", to: "", cats: null, mode: "amount" }; // cats: null = all categories; mode: 'amount' | 'percent'
 let catChart=null, trendChart=null;
 
 function rangeToDates(range, customFrom, customTo){
@@ -786,6 +800,12 @@ function parseDate(raw){
     let mo=months[m[1].slice(0,3).toLowerCase()], d=+m[2], y=+m[3]; if(y<100) y+=2000;
     return y+"-"+String(mo).padStart(2,'0')+"-"+String(d).padStart(2,'0');
   }
+  // "01-May-26" (day-month name-year, hyphen separated)
+  m = s.match(/^(\d{1,2})-([A-Za-z]{3,9})-(\d{2,4})/);
+  if(m && months[m[2].slice(0,3).toLowerCase()]){
+    let d=+m[1], mo=months[m[2].slice(0,3).toLowerCase()], y=+m[3]; if(y<100) y+=2000;
+    return y+"-"+String(mo).padStart(2,'0')+"-"+String(d).padStart(2,'0');
+  }
   let d = new Date(s);
   if(!isNaN(d.getTime())) return d.toISOString().slice(0,10);
   return "";
@@ -896,13 +916,26 @@ function parsePDFFile(file,row){
           if(!b){ b={y, items:[]}; buckets.push(b); }
           b.items.push(it);
         });
-        buckets.sort((a,b)=>b.y-a.y).forEach(b=>{
+        let pageLines = buckets.sort((a,b)=>b.y-a.y).map(b=>{
           const lineItems = b.items.sort((a,c)=>a.transform[4]-c.transform[4]);
-          lines.push(lineItems.map(it=>it.str).join(" ").replace(/\s+/g," ").trim());
-        });
+          return lineItems.map(it=>it.str).join(" ").replace(/\s+/g," ").trim();
+        }).filter(l=>l);
+        // many statements repeat a full account-summary header (and a
+        // disclaimer footer) on every single page - if we can find the
+        // column-header row, drop everything above it; if we can find the
+        // footer disclaimer, drop everything from there on, so this
+        // boilerplate doesn't get glued onto the first/last transaction
+        // block of each page
+        const hdrIdx = pageLines.findIndex(l=> /^date\s+reference\s+description\s+amount\s+balance$/i.test(l));
+        if(hdrIdx>=0) pageLines = pageLines.slice(hdrIdx+1);
+        const ftrIdx = pageLines.findIndex(l=> /^this is an electronically generated statement/i.test(l));
+        if(ftrIdx>=0) pageLines = pageLines.slice(0, ftrIdx);
+        pageLines = pageLines.filter(l=> !/^brought forward\b/i.test(l) && !/^closing balance\b/i.test(l));
+        lines.push(...pageLines);
       }
       lines = lines.filter(l=>l);
       let txRows = blocksToRows(lines);
+      if(txRows.length===0) txRows = blocksToRowsV2(lines);
       if(txRows.length===0) txRows = linesToRows(lines);
       if(txRows.length>0){
         ingestParsedRows(txRows, file.name);
@@ -931,9 +964,9 @@ function parsePDFFile(file,row){
 // this groups lines into blocks ending at each explicit signed-amount line,
 // then pulls the date/amount from anywhere in the block and treats the rest
 // of the text (minus reference codes and account numbers) as the description.
-const PDF_SIGNED_AMOUNT_RE = /\(?\s*([+\-])\s*\)?\s*(\d+(?:,\d{3})*\.\d{2,3})/;
-const PDF_BOILERPLATE_RE = /opening balance|closing balance|statement of account|total credit|total debit|generated statement|licensed and regulated/i;
-const PDF_REF_CODE_RE = /^FT[0-9A-Z]{4,}$/i;
+const PDF_SIGNED_AMOUNT_RE = /\(\s*([+\-])\s*\)\s*(\d+(?:,\d{3})*\.\d{2,3})/;
+const PDF_BOILERPLATE_RE = /opening balance|closing balance|statement of account|total credit|total debit|generated statement|licensed and regulated|brought forward/i;
+const PDF_REF_CODE_RE = /^[A-Z]{2,5}\d{5,}[A-Z0-9]*$/i;
 const PDF_ACCTNUM_RE = /^\d{4,}(-\d+)?$/;
 function blocksToRows(lines){
   const amountLineIdx = [];
@@ -974,10 +1007,60 @@ function blocksToRows(lines){
   return out;
 }
 
+// Some statements (e.g. ila / Bank ABC) don't mark the amount with an
+// explicit (+)/(-) sign at all - a debit is just printed with a leading "-"
+// and a credit has no sign character whatsoever, with the running balance
+// printed right after it on the same line ("276.000 282.000", "-282.000
+// 0.000"). Each transaction's first line starts with the date; any extra
+// detail (IBAN, "From Mobile:", card info, etc) is printed on the lines that
+// follow, before the NEXT date-leading line starts - so grouping by date-start
+// (rather than by where the amount happens to land) keeps continuation lines
+// attached to the correct transaction.
+const PDF_TWO_NUM_RE = /(-?\d{1,3}(?:,\d{3})*\.\d{2,3})\s+(\d{1,3}(?:,\d{3})*\.\d{2,3})\s*$/;
+function blocksToRowsV2(lines){
+  const startIdx = [];
+  lines.forEach((l,i)=>{ if(PDF_DATE_LEADING_RE.test(l)) startIdx.push(i); });
+  const out = [];
+  startIdx.forEach((si,k)=>{
+    const ei = k+1<startIdx.length ? startIdx[k+1] : lines.length;
+    const blockLines = lines.slice(si, ei);
+    const blockText = blockLines.join(" ");
+    if(PDF_BOILERPLATE_RE.test(blockText)) return;
+    // amount+balance pair sits at the end of whichever line carries it
+    const amtLine = blockLines.find(l=> PDF_TWO_NUM_RE.test(l));
+    if(!amtLine) return;
+    const bm = amtLine.match(PDF_TWO_NUM_RE);
+    const amount = parseAmount(bm[1]);
+    if(amount===null) return;
+    const dm = blockText.match(PDF_DATE_RE);
+    if(!dm) return;
+    const date = parseDate(dm[0]);
+    if(!date) return;
+    let desc = blockText
+      .replace(bm[0]," ")
+      .replace(PDF_DATE_GLOBAL_RE," ")
+      .split(/\s+/)
+      .filter(tok=>{
+        if(!tok) return false;
+        if(extractIBAN(tok)) return true;
+        if(PDF_REF_CODE_RE.test(tok)) return false;
+        if(PDF_ACCTNUM_RE.test(tok)) return false;
+        return true;
+      })
+      .join(" ")
+      .replace(/[(),]+/g," ")
+      .replace(/\s+/g," ")
+      .trim();
+    if(!desc) desc = "Transaction";
+    out.push({date, description:desc, amount});
+  });
+  return out;
+}
+
 // Heuristic PDF line -> transaction
 const PDF_NUM_RE = /-?\(?\d+(?:,\d{3})*\.\d{2,3}\)?(?:\s?(?:CR|DR))?/gi;
 const PDF_NUM_TEST_RE = /-?\(?\d+(?:,\d{3})*\.\d{2,3}\)?(?:\s?(?:CR|DR))?/i;
-const PDF_DATE_SRC = "\\d{1,2}[\\/\\-.]\\d{1,2}[\\/\\-.]\\d{2,4}|\\d{4}-\\d{1,2}-\\d{1,2}|\\d{1,2}\\s+[A-Za-z]{3,9}\\.?\\s+\\d{2,4}|[A-Za-z]{3,9}\\.?\\s+\\d{1,2},?\\s+\\d{2,4}";
+const PDF_DATE_SRC = "\\d{1,2}-[A-Za-z]{3,9}-\\d{2,4}|\\d{1,2}[\\/\\-.]\\d{1,2}[\\/\\-.]\\d{2,4}|\\d{4}-\\d{1,2}-\\d{1,2}|\\d{1,2}\\s+[A-Za-z]{3,9}\\.?\\s+\\d{2,4}|[A-Za-z]{3,9}\\.?\\s+\\d{1,2},?\\s+\\d{2,4}";
 const PDF_DATE_RE = new RegExp("(?:"+PDF_DATE_SRC+")");
 const PDF_DATE_LEADING_RE = new RegExp("^(?:"+PDF_DATE_SRC+")");
 const PDF_DATE_GLOBAL_RE = new RegExp("(?:"+PDF_DATE_SRC+")","g");
@@ -1031,21 +1114,47 @@ function ingestTable(rows, filename){
   if(rows.length===0) return;
   let headerIdx = 0;
   const headerKeywords = /date|desc|narration|particular|detail|debit|credit|withdraw|deposit|amount|value|type|balance/i;
-  for(let i=0;i<Math.min(rows.length,5);i++){
-    if(rows[i].some(c=>headerKeywords.test(String(c)))){ headerIdx = i; break; }
+  // statements sometimes have a few metadata rows above the real table (card
+  // number, statement date, page number, etc) - a metadata label like
+  // "Statement Date:" only trips ONE keyword, while a genuine header row has
+  // several (date + description + amount...), so require 2+ matches to avoid
+  // locking onto a metadata row instead of the real header
+  for(let i=0;i<Math.min(rows.length,20);i++){
+    const matches = rows[i].filter(c=>headerKeywords.test(String(c||""))).length;
+    if(matches>=2){ headerIdx = i; break; }
   }
   const header = rows[headerIdx].map(h=>String(h).toLowerCase().trim());
-  const find = (...keys)=> header.findIndex(h=> keys.some(k=>h.includes(k)));
+  // key-priority match: check each key across all columns before moving to the
+  // next key, so a specific term like "description" wins over an incidental
+  // substring hit (e.g. "Transaction Date" containing "transaction")
+  const find = (...keys)=>{
+    for(const k of keys){
+      const idx = header.findIndex(h=>h.includes(k));
+      if(idx>=0) return idx;
+    }
+    return -1;
+  };
   const col = {
     date: find('date'),
-    desc: find('narration','particular','description','detail','remarks','transaction'),
+    desc: find('description','narration','particular','detail','remarks','transaction'),
     debit: find('debit','withdrawal','dr amount','dr.'),
     credit: find('credit','deposit','cr amount','cr.'),
-    amount: find('amount','value'),
+    amount: find('inclusive','amount','value'),
     type: find('type','dr/cr','indicator')
   };
   if(col.desc===-1) col.desc = (col.date===0?1:0);
-  const dataRows = rows.slice(headerIdx+1);
+  let dataStart = headerIdx+1;
+  // some statements print the header twice (e.g. an English row immediately
+  // followed by an Arabic translation row) - if the very next row has nothing
+  // parseable in the date column, treat it as a second header row and skip it
+  if(col.date>=0 && rows[dataStart] && !parseDate(rows[dataStart][col.date])){
+    dataStart++;
+  }
+  // a "Card Statement" (credit card) has no debit/credit columns at all -
+  // every printed line is a charge, so treat positive amounts as expenses
+  const isCardStatement = !!(col.debit<0 && col.credit<0 &&
+    rows.slice(0, headerIdx+1).some(r=> r.some(c=> /card\s*statement/i.test(String(c||"")))));
+  const dataRows = rows.slice(dataStart);
   const parsed = [];
   dataRows.forEach(r=>{
     const dateRaw = col.date>=0 ? r[col.date] : "";
@@ -1063,6 +1172,7 @@ function ingestTable(rows, filename){
         const t = String(r[col.type]||"").toLowerCase();
         if((t.includes('debit')||t.includes('dr')||t.includes('withdraw')) && amount>0) amount = -amount;
       }
+      if(amount!==null && isCardStatement && amount>0) amount = -amount;
     }
     if(!date && !descRaw) return;
     if(amount===null) return;
@@ -1408,18 +1518,30 @@ function renderInsights(){
 
   const ctx = document.getElementById('catChart').getContext('2d');
   if(catChart) catChart.destroy();
+  const total = data.reduce((s,v)=>s+v,0);
+  const pct = v=> total>0 ? (v/total*100) : 0;
+  const mode = insightsFilter.mode;
   if(labels.length===0){
     ctx.clearRect(0,0,500,220);
   } else {
     catChart = new Chart(ctx,{
       type:'doughnut',
       data:{ labels, datasets:[{data, backgroundColor:colors, borderWidth:0}] },
-      options:{ plugins:{legend:{display:false}}, cutout:'62%' }
+      options:{
+        plugins:{
+          legend:{display:false},
+          tooltip:{ callbacks:{ label: ctxItem => {
+            const v = ctxItem.parsed;
+            return mode==='percent' ? (ctxItem.label+': '+pct(v).toFixed(1)+'%') : (ctxItem.label+': '+fmtMoney(-v));
+          } } }
+        },
+        cutout:'62%'
+      }
     });
   }
   const rangeLabel = RANGE_LABELS[insightsFilter.range] || 'this period';
   document.getElementById('catLegend').innerHTML = labels.map((l,i)=>
-    `<div class="legend-item"><span class="sw" style="background:${colors[i]}"></span>${escapeHtml(l)}<span class="amt">${fmtMoney(-data[i])}</span></div>`
+    `<div class="legend-item"><span class="sw" style="background:${colors[i]}"></span>${escapeHtml(l)}<span class="amt">${mode==='percent' ? pct(data[i]).toFixed(1)+'%' : fmtMoney(-data[i])}</span></div>`
   ).join('') || `<p class="hint">No expenses match the current filters for ${escapeHtml(rangeLabel)}.</p>`;
   updateInsCatBtnLabel();
 
@@ -1460,6 +1582,17 @@ document.getElementById('insRange').addEventListener('change',e=>{
 });
 document.getElementById('insFrom').addEventListener('change',e=>{ insightsFilter.from = e.target.value; if(insightsFilter.range==='custom') renderInsights(); });
 document.getElementById('insTo').addEventListener('change',e=>{ insightsFilter.to = e.target.value; if(insightsFilter.range==='custom') renderInsights(); });
+document.getElementById('insModeToggle').addEventListener('click',e=>{
+  const btn = e.target.closest('.seg-opt');
+  if(!btn) return;
+  insightsFilter.mode = btn.dataset.mode;
+  document.querySelectorAll('#insModeToggle .seg-opt').forEach(b=>{
+    const active = b===btn;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  renderInsights();
+});
 document.getElementById('insCatBtn').addEventListener('click',()=>{
   const list = document.getElementById('insCatOptList');
   const allCats = Object.keys(state.categories).filter(c=>c!=='Income');
