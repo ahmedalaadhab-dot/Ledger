@@ -298,9 +298,16 @@
 
   /* ---------- rules ---------- */
   .rule-card{margin-bottom:10px;}
-  .rule-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
-  .rule-top .name{display:flex;align-items:center;gap:8px;font-weight:600;font-size:13.5px;}
+  .rule-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:8px;}
+  .rule-top .name{display:flex;align-items:center;gap:8px;font-weight:600;font-size:13.5px;flex:1;min-width:0;}
   .rule-top .sw{width:10px;height:10px;border-radius:50%;}
+  .reorder-btns{display:flex;flex-direction:column;gap:2px;flex:none;}
+  .reorder-btn{
+    width:22px;height:18px;border:1px solid var(--line-strong);border-radius:5px;background:#fff;
+    color:var(--muted);font-size:9px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;
+  }
+  .reorder-btn:disabled{opacity:0.3;cursor:default;}
+  .reorder-btn:not(:disabled):active{background:var(--paper);}
   .kw-row{display:flex;flex-wrap:wrap;gap:6px;}
   .kw{
     background:#F1EEFE;border:1px solid var(--line);border-radius:999px;padding:4px 9px;font-size:11.5px;
@@ -367,11 +374,6 @@
       <option value="SAR">SAR</option>
       <option value="AED">AED</option>
     </select>
-  </div>
-  <div class="cover-stats">
-    <div class="stat-pill"><div class="lbl">Income</div><div class="val pos mono" id="headIncome">—</div></div>
-    <div class="stat-pill"><div class="lbl">Expenses</div><div class="val neg mono" id="headExpense">—</div></div>
-    <div class="stat-pill"><div class="lbl">Net</div><div class="val mono" id="headNet">—</div></div>
   </div>
 </header>
 
@@ -494,7 +496,7 @@
   <!-- RULES VIEW -->
   <section class="view" id="view-rules">
     <h2 class="section-title">Categorisation rules</h2>
-    <p class="hint" style="margin-top:-6px;">New statements are auto-tagged by matching words in the description against these keywords. Add your own to improve accuracy.</p>
+    <p class="hint" style="margin-top:-6px;">New statements are auto-tagged by matching words in the description against these keywords. Add your own to improve accuracy. Use the arrows to reorder categories — when a description matches more than one, the one listed first wins.</p>
     <div class="card">
       <h2 class="section-title" style="font-size:13px;">Known transfer accounts</h2>
       <p class="hint" style="margin-top:0;">Fawri+, BenefitPay and other transfers aren't auto-categorized since they're used for everything. Pick a category the first time you see one and FinTrack remembers it for that IBAN.</p>
@@ -1491,20 +1493,18 @@ document.getElementById('exportBtn').addEventListener('click',()=>{
 
 /* ============ insights ============ */
 function renderInsights(){
-  const income = state.transactions.filter(t=>t.amount>0).reduce((s,t)=>s+t.amount,0);
-  const expense = state.transactions.filter(t=>t.amount<0).reduce((s,t)=>s+t.amount,0);
+  const {from,to} = rangeToDates(insightsFilter.range, insightsFilter.from, insightsFilter.to);
+  const periodTx = state.transactions.filter(t=>inRange(t.date, from, to));
+  const income = periodTx.filter(t=>t.amount>0).reduce((s,t)=>s+t.amount,0);
+  const expense = periodTx.filter(t=>t.amount<0).reduce((s,t)=>s+t.amount,0);
+  const net = income+expense;
   document.getElementById('insIncome').textContent = fmtMoney(income);
   document.getElementById('insExpense').textContent = fmtMoney(expense);
-  document.getElementById('insNet').textContent = fmtMoney(income+expense);
-  document.getElementById('headIncome').textContent = fmtMoney(income);
-  document.getElementById('headExpense').textContent = fmtMoney(expense);
-  const net = income+expense;
-  const headNet = document.getElementById('headNet');
-  headNet.textContent = fmtMoney(net);
-  headNet.className = 'val mono ' + (net>=0?'pos':'neg');
+  const insNet = document.getElementById('insNet');
+  insNet.textContent = fmtMoney(net);
+  insNet.className = 'val mono ' + (net>=0?'pos':'neg');
 
   // category breakdown respects the time range + category picker above the chart
-  const {from,to} = rangeToDates(insightsFilter.range, insightsFilter.from, insightsFilter.to);
   const scoped = state.transactions.filter(t=>
     t.amount<0 &&
     inRange(t.date, from, to) &&
@@ -1662,9 +1662,16 @@ function updateBudgetRowDisplay(cat, sp){
 /* ============ rules ============ */
 function renderRules(){
   const wrap = document.getElementById('ruleList');
-  wrap.innerHTML = Object.entries(state.categories).map(([cat,kws])=>`
+  const cats = Object.keys(state.categories);
+  wrap.innerHTML = cats.map((cat,i)=>{
+    const kws = state.categories[cat];
+    return `
     <div class="card rule-card" data-cat="${escapeHtml(cat)}">
       <div class="rule-top">
+        <div class="reorder-btns">
+          <button class="reorder-btn" data-move-up title="Move up" ${i===0?'disabled':''}>▲</button>
+          <button class="reorder-btn" data-move-down title="Move down" ${i===cats.length-1?'disabled':''}>▼</button>
+        </div>
         <span class="name"><span class="sw" style="background:${state.catColor[cat]}"></span>${escapeHtml(cat)}</span>
         ${cat!=='Other' && cat!=='Income' ? '<button class="btn danger" data-del-cat="'+escapeHtml(cat)+'" style="padding:4px 9px;font-size:11px;">Delete</button>' : ''}
       </div>
@@ -1674,7 +1681,7 @@ function renderRules(){
         <button class="btn ghost" data-add-btn>Add</button>
       </div>
     </div>
-  `).join('');
+  `;}).join('');
   wrap.querySelectorAll('.rule-card').forEach(card=>{
     const cat = card.dataset.cat;
     card.querySelectorAll('[data-rm-kw]').forEach(btn=>{
@@ -1697,7 +1704,21 @@ function renderRules(){
       state.transactions.forEach(t=>{ if(t.category===cat) t.category='Other'; });
       saveCategories(); saveTransactions(); renderAll();
     });
+    card.querySelector('[data-move-up]').addEventListener('click',()=> reorderCategory(cat,-1));
+    card.querySelector('[data-move-down]').addEventListener('click',()=> reorderCategory(cat,1));
   });
+}
+function reorderCategory(cat, dir){
+  const keys = Object.keys(state.categories);
+  const i = keys.indexOf(cat);
+  const j = i+dir;
+  if(j<0 || j>=keys.length) return;
+  [keys[i],keys[j]] = [keys[j],keys[i]];
+  const reordered = {};
+  keys.forEach(k=> reordered[k] = state.categories[k]);
+  state.categories = reordered;
+  saveCategories();
+  renderRules();
 }
 document.getElementById('addCatBtn').addEventListener('click',()=>{
   const inp = document.getElementById('newCatName');
@@ -1811,14 +1832,6 @@ function renderAll(){
   if(activeView==='budgets') renderBudgets();
   if(activeView==='rules'){ renderRules(); renderIbanRules(); }
   if(activeView==='upload') renderStatements();
-  // always refresh header totals
-  const income = state.transactions.filter(t=>t.amount>0).reduce((s,t)=>s+t.amount,0);
-  const expense = state.transactions.filter(t=>t.amount<0).reduce((s,t)=>s+t.amount,0);
-  document.getElementById('headIncome').textContent = fmtMoney(income);
-  document.getElementById('headExpense').textContent = fmtMoney(expense);
-  const headNet = document.getElementById('headNet');
-  headNet.textContent = fmtMoney(income+expense);
-  headNet.className = 'val mono ' + ((income+expense)>=0?'pos':'neg');
 }
 
 (async function init(){
