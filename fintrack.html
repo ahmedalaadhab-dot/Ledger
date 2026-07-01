@@ -982,30 +982,40 @@ const PDF_BOILERPLATE_RE = /opening balance|closing balance|statement of account
 const PDF_REF_CODE_RE = /^[A-Z]{2,5}\d{5,}[A-Z0-9]*$/i;
 const PDF_ACCTNUM_RE = /^\d{4,}(-\d+)?$/;
 function blocksToRows(lines){
+  // Find every line that carries an explicit (+)/(-) signed amount.
+  // In Al Salam Bank (and similar Gulf bank) PDFs the layout is:
+  //   LINE A:  {PostingDate} {RefCode} {ValueDate} (+/-) {Amount} {Balance}
+  //   LINE B+: {Description text, possibly multi-line}
+  // i.e. the amount is on the FIRST line of each block; the description
+  // lines come AFTER it.  So we group from each amount-line forward to
+  // (but not including) the next amount-line.
   const amountLineIdx = [];
   lines.forEach((l,i)=>{ if(PDF_SIGNED_AMOUNT_RE.test(l)) amountLineIdx.push(i); });
   const out = [];
-  let blockStart = 0;
-  amountLineIdx.forEach(endIdx=>{
-    const blockLines = lines.slice(blockStart, endIdx+1);
-    blockStart = endIdx+1;
+  amountLineIdx.forEach((startIdx, k)=>{
+    const endIdx = k+1 < amountLineIdx.length ? amountLineIdx[k+1] : lines.length;
+    const blockLines = lines.slice(startIdx, endIdx);
     const blockText = blockLines.join(" ");
     if(PDF_BOILERPLATE_RE.test(blockText)) return;
-    const sm = blockText.match(PDF_SIGNED_AMOUNT_RE);
+    const sm = lines[startIdx].match(PDF_SIGNED_AMOUNT_RE);
     if(!sm) return;
     const amount = parseAmount(sm[2]) * (sm[1]==='-' ? -1 : 1);
     const dm = blockText.match(PDF_DATE_RE);
     if(!dm) return;
     const date = parseDate(dm[0]);
     if(!date) return;
-    let desc = blockText
+    // Description lives in the continuation lines (after the first line).
+    // Fall back to extracting from the whole block if no continuation exists.
+    const contLines = blockLines.slice(1);
+    let descSrc = contLines.length > 0 ? contLines.join(" ") : blockText;
+    let desc = descSrc
       .replace(PDF_SIGNED_AMOUNT_RE," ")
       .replace(PDF_DATE_GLOBAL_RE," ")
       .replace(PDF_NUM_RE," ")
       .split(/\s+/)
       .filter(tok=>{
         if(!tok) return false;
-        if(extractIBAN(tok)) return true; // never drop IBANs - needed for transfer categorization
+        if(extractIBAN(tok)) return true;
         if(PDF_REF_CODE_RE.test(tok)) return false;
         if(PDF_ACCTNUM_RE.test(tok)) return false;
         return true;
