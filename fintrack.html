@@ -1608,6 +1608,7 @@ function renderInsights(){
     });
   }
   updateTrendCatBtnLabel();
+}
 function updateTrendCatBtnLabel(){
   const btn = document.getElementById('trendCatBtn');
   if(!btn) return;
@@ -1636,6 +1637,7 @@ document.getElementById('trendCatApplyBtn').addEventListener('click',()=>{
 document.getElementById('trendCatPopover').addEventListener('click',e=>{
   if(e.target.id==='trendCatPopover') document.getElementById('trendCatPopover').classList.remove('open');
 });
+function updateInsCatBtnLabel(){
   const btn = document.getElementById('insCatBtn');
   if(!btn) return;
   if(!insightsFilter.cats) btn.textContent = 'Categories: All';
