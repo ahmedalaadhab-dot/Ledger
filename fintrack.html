@@ -564,6 +564,8 @@
       <button class="btn ghost" id="trendCatAllBtn">Select all</button>
       <button class="btn primary block" id="trendCatApplyBtn">Apply</button>
     </div>
+    <button class="btn ghost" id="trendCatDefaultBtn" style="width:100%;margin-top:10px;font-size:12px;">Set as default</button>
+    <p class="hint" id="trendCatDefaultHint" style="margin:6px 0 0;text-align:center;"></p>
   </div>
 </div>
 
@@ -622,7 +624,8 @@ let state = {
   budgets: {},                // name -> number
   catColor: {},                // name -> color (assigned)
   ibanMap: {},                  // IBAN -> category, learned from the first transfer to that account
-  insDefaultCats: null          // array of category names saved as the Insights chart's default selection (null = all)
+  insDefaultCats: null,         // array of category names saved as the Insights chart's default selection (null = all)
+  trendDefaultCats: null        // same for the monthly trend chart
 };
 let staging = [];             // rows pending review
 let activeView = "upload";
@@ -761,6 +764,7 @@ async function loadState(){
   try{ const cc = await dbGet('ledger:catColor'); if(cc) state.catColor = cc; }catch(e){}
   try{ const im = await dbGet('ledger:ibanMap'); if(im) state.ibanMap = im; }catch(e){}
   try{ const dc = await dbGet('ledger:insDefaultCats'); if(dc) state.insDefaultCats = dc; }catch(e){}
+  try{ const td = await dbGet('ledger:trendDefaultCats'); if(td) state.trendDefaultCats = td; }catch(e){}
   if(!state.categories || Object.keys(state.categories).length===0){
     state.categories = JSON.parse(JSON.stringify(DEFAULT_CATEGORIES));
   }
@@ -770,6 +774,12 @@ async function loadState(){
     insightsFilter.cats = (state.insDefaultCats.length===0 || state.insDefaultCats.length===allCats.length)
       ? null
       : new Set(state.insDefaultCats.filter(c=>allCats.includes(c)));
+  }
+  if(state.trendDefaultCats && Array.isArray(state.trendDefaultCats)){
+    const allCats = Object.keys(state.categories);
+    trendFilter.cats = (state.trendDefaultCats.length===0 || state.trendDefaultCats.length===allCats.length)
+      ? null
+      : new Set(state.trendDefaultCats.filter(c=>allCats.includes(c)));
   }
 }
 async function persist(key,val){
@@ -782,6 +792,7 @@ function saveCurrency(){ persist('ledger:currency', state.currency); }
 function saveCatColor(){ persist('ledger:catColor', state.catColor); }
 function saveIbanMap(){ persist('ledger:ibanMap', state.ibanMap); }
 function saveInsDefaultCats(){ persist('ledger:insDefaultCats', state.insDefaultCats); }
+function saveTrendDefaultCats(){ persist('ledger:trendDefaultCats', state.trendDefaultCats); }
 
 function assignColors(){
   let i = Object.keys(state.catColor).length;
@@ -1645,6 +1656,7 @@ document.getElementById('trendCatBtn').addEventListener('click',()=>{
     const checked = !trendFilter.cats || trendFilter.cats.has(c);
     return `<label class="cat-opt"><input type="checkbox" data-cat="${escapeHtml(c)}" ${checked?'checked':''}><span class="sw" style="background:${state.catColor[c]||'#6C6B8C'}"></span>${escapeHtml(c)}</label>`;
   }).join('');
+  updateTrendCatDefaultHint();
   document.getElementById('trendCatPopover').classList.add('open');
 });
 document.getElementById('trendCatAllBtn').addEventListener('click',()=>{
@@ -1657,6 +1669,23 @@ document.getElementById('trendCatApplyBtn').addEventListener('click',()=>{
   document.getElementById('trendCatPopover').classList.remove('open');
   renderInsights();
 });
+document.getElementById('trendCatDefaultBtn').addEventListener('click',()=>{
+  const allCats = Object.keys(state.categories);
+  const checked = [...document.querySelectorAll('#trendCatOptList input[type=checkbox]:checked')].map(cb=>cb.dataset.cat);
+  state.trendDefaultCats = (checked.length===0 || checked.length===allCats.length) ? [] : checked;
+  saveTrendDefaultCats();
+  updateTrendCatDefaultHint();
+  toast('Saved as the default trend category selection');
+});
+function updateTrendCatDefaultHint(){
+  const hint = document.getElementById('trendCatDefaultHint');
+  if(!hint) return;
+  const allCats = Object.keys(state.categories);
+  if(!state.trendDefaultCats || state.trendDefaultCats.length===0 || state.trendDefaultCats.length===allCats.length)
+    hint.textContent = '';
+  else
+    hint.textContent = 'Default: '+state.trendDefaultCats.length+' selected';
+}
 document.getElementById('trendCatPopover').addEventListener('click',e=>{
   if(e.target.id==='trendCatPopover') document.getElementById('trendCatPopover').classList.remove('open');
 });
