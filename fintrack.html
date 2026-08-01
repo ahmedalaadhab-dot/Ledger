@@ -300,7 +300,15 @@
   .rule-card{margin-bottom:10px;}
   .rule-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:8px;}
   .rule-top .name{display:flex;align-items:center;gap:8px;font-weight:600;font-size:13.5px;flex:1;min-width:0;}
-  .rule-top .sw{width:10px;height:10px;border-radius:50%;}
+  .rule-top .sw{width:10px;height:10px;border-radius:50%;flex:none;}
+  .cat-name-input{
+    flex:1;min-width:0;border:1px solid transparent;border-radius:6px;background:none;
+    font-weight:600;font-size:13.5px;font-family:inherit;color:inherit;padding:3px 6px;
+  }
+  .cat-name-input:hover{border-color:var(--line);}
+  .cat-name-input:focus{border-color:var(--line-strong);background:#fff;outline:none;}
+  .cat-name-input:disabled{cursor:default;}
+  .cat-name-input:disabled:hover{border-color:transparent;}
   .reorder-btns{display:flex;flex-direction:column;gap:2px;flex:none;}
   .reorder-btn{
     width:22px;height:18px;border:1px solid var(--line-strong);border-radius:5px;background:#fff;
@@ -518,11 +526,6 @@
   <section class="view" id="view-rules">
     <h2 class="section-title">Categorisation rules</h2>
     <p class="hint" style="margin-top:-6px;">New statements are auto-tagged by matching words in the description against these keywords. Add your own to improve accuracy. Use the arrows to reorder categories — when a description matches more than one, the one listed first wins.</p>
-    <div class="card">
-      <h2 class="section-title" style="font-size:13px;">Known transfer accounts</h2>
-      <p class="hint" style="margin-top:0;">Fawri+, BenefitPay and other transfers aren't auto-categorized since they're used for everything. Pick a category the first time you see one and FinTrack remembers it for that IBAN.</p>
-      <div id="ibanRuleList"></div>
-    </div>
     <div id="ruleList"></div>
     <div class="card">
       <h2 class="section-title" style="font-size:13px;">New category</h2>
@@ -530,6 +533,11 @@
         <input id="newCatName" placeholder="e.g. Pet care">
         <button class="btn primary" id="addCatBtn">Add</button>
       </div>
+    </div>
+    <div class="card">
+      <h2 class="section-title" style="font-size:13px;">Known transfer accounts</h2>
+      <p class="hint" style="margin-top:0;">Fawri+, BenefitPay and other transfers aren't auto-categorized since they're used for everything. Pick a category the first time you see one and FinTrack remembers it for that IBAN.</p>
+      <div id="ibanRuleList"></div>
     </div>
   </section>
 
@@ -1809,7 +1817,10 @@ function renderRules(){
           <button class="reorder-btn" data-move-up title="Move up" ${i===0?'disabled':''}>▲</button>
           <button class="reorder-btn" data-move-down title="Move down" ${i===cats.length-1?'disabled':''}>▼</button>
         </div>
-        <span class="name"><span class="sw" style="background:${state.catColor[cat]}"></span>${escapeHtml(cat)}</span>
+        <span class="name">
+          <span class="sw" style="background:${state.catColor[cat]}"></span>
+          <input class="cat-name-input" data-rename-input value="${escapeHtml(cat)}" ${cat==='Other'||cat==='Income'?'disabled title="This category can\'t be renamed"':''}>
+        </span>
         ${cat!=='Other' && cat!=='Income' ? '<button class="btn danger" data-del-cat="'+escapeHtml(cat)+'" style="padding:4px 9px;font-size:11px;">Delete</button>' : ''}
       </div>
       <div class="kw-row">${kws.map(k=>`<span class="kw">${escapeHtml(k)}<button data-rm-kw="${escapeHtml(k)}">×</button></span>`).join('') || '<span class="hint" style="margin:0;">No keywords yet — falls back to default.</span>'}</div>
@@ -1821,6 +1832,20 @@ function renderRules(){
   `;}).join('');
   wrap.querySelectorAll('.rule-card').forEach(card=>{
     const cat = card.dataset.cat;
+    const renameInput = card.querySelector('[data-rename-input]');
+    if(renameInput && !renameInput.disabled){
+      const commit = ()=>{
+        const v = renameInput.value.trim();
+        if(!v || v===cat){ renameInput.value = cat; return; }
+        if(!renameCategory(cat, v)) renameInput.value = cat;
+        else renderAll();
+      };
+      renameInput.addEventListener('blur', commit);
+      renameInput.addEventListener('keydown', e=>{
+        if(e.key==='Enter'){ e.preventDefault(); renameInput.blur(); }
+        else if(e.key==='Escape'){ renameInput.value = cat; renameInput.blur(); }
+      });
+    }
     card.querySelectorAll('[data-rm-kw]').forEach(btn=>{
       btn.addEventListener('click',()=>{
         state.categories[cat] = state.categories[cat].filter(k=>k!==btn.dataset.rmKw);
@@ -1844,6 +1869,25 @@ function renderRules(){
     card.querySelector('[data-move-up]').addEventListener('click',()=> reorderCategory(cat,-1));
     card.querySelector('[data-move-down]').addEventListener('click',()=> reorderCategory(cat,1));
   });
+}
+function renameCategory(oldName, newName){
+  if(state.categories[newName]){ toast('That category already exists'); return false; }
+  const reordered = {};
+  Object.keys(state.categories).forEach(k=>{ reordered[k===oldName?newName:k] = state.categories[k]; });
+  state.categories = reordered;
+  if(oldName in state.catColor){ state.catColor[newName] = state.catColor[oldName]; delete state.catColor[oldName]; }
+  if(oldName in state.budgets){ state.budgets[newName] = state.budgets[oldName]; delete state.budgets[oldName]; }
+  Object.keys(state.ibanMap).forEach(iban=>{ if(state.ibanMap[iban]===oldName) state.ibanMap[iban]=newName; });
+  state.transactions.forEach(t=>{ if(t.category===oldName) t.category=newName; });
+  if(Array.isArray(state.insDefaultCats)){
+    state.insDefaultCats = state.insDefaultCats.map(c=> c===oldName?newName:c);
+    saveInsDefaultCats();
+  }
+  if(insightsFilter.cats && insightsFilter.cats.has(oldName)){ insightsFilter.cats.delete(oldName); insightsFilter.cats.add(newName); }
+  if(trendFilter.cats && trendFilter.cats.has(oldName)){ trendFilter.cats.delete(oldName); trendFilter.cats.add(newName); }
+  saveCategories(); saveCatColor(); saveBudgets(); saveIbanMap(); saveTransactions();
+  toast('Renamed "'+oldName+'" to "'+newName+'"');
+  return true;
 }
 function reorderCategory(cat, dir){
   const keys = Object.keys(state.categories);
