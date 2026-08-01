@@ -364,6 +364,17 @@
   .bar-track{height:7px;border-radius:4px;background:var(--line);overflow:hidden;}
   .bar-fill{height:100%;border-radius:4px;}
   .budget-foot{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:4px;font-family:'IBM Plex Mono',monospace;}
+  .hist-row{display:flex;gap:4px;margin-top:10px;height:26px;align-items:flex-end;}
+  .hist-bar{flex:1;height:100%;display:flex;align-items:flex-end;border-radius:3px;overflow:hidden;background:var(--line);}
+  .hist-bar-fill{width:100%;border-radius:2px;background:var(--muted);opacity:0.45;}
+  .hist-bar-fill.current{opacity:1;}
+  .hist-bar-fill.over{background:var(--rust);opacity:0.85;}
+  .hist-bar-fill.over.current{opacity:1;}
+  .suggest-btn{
+    margin-top:8px;width:100%;font-size:11.5px;padding:6px 10px;
+    justify-content:space-between;color:var(--muted);
+  }
+  .suggest-btn b{color:var(--ink);font-weight:600;}
 
   /* ---------- rules ---------- */
   .rule-card{margin-bottom:10px;}
@@ -609,7 +620,7 @@
   <!-- BUDGETS VIEW -->
   <section class="view" id="view-budgets">
     <h2 class="section-title">Monthly budgets</h2>
-    <p class="hint" style="margin-top:-6px;">Set a monthly limit per category. Progress is based on the current calendar month.</p>
+    <p class="hint" style="margin-top:-6px;" id="budgetsIntroHint">Set a monthly limit per category.</p>
     <div class="card" id="budgetList"></div>
   </section>
 
@@ -1881,48 +1892,143 @@ document.getElementById('insCatDefaultBtn').addEventListener('click',()=>{
 document.getElementById('insCatPopover').addEventListener('click',e=>{ if(e.target.id==='insCatPopover') document.getElementById('insCatPopover').classList.remove('open'); });
 
 /* ============ budgets ============ */
+const BUDGET_HISTORY_MONTHS = 6;
+
+// Pure integer arithmetic on year/month avoids timezone edge cases entirely.
+function shiftMonthKey(y, m, delta){
+  const idx = (y*12 + (m-1)) + delta;
+  const ny = Math.floor(idx/12);
+  const nm = (idx%12) + 1;
+  return ny + '-' + String(nm).padStart(2,'0');
+}
+function monthLabel(key, opts){
+  const [y,m] = key.split('-').map(Number);
+  return new Date(y, m-1, 1).toLocaleDateString(undefined, opts || {month:'short', year:'2-digit'});
+}
+// Oldest -> newest month keys, anchored to the latest month that actually has
+// transactions - not today's date, since statements are uploaded well after
+// the month they cover has closed.
+function budgetMonthKeys(n){
+  const dated = state.transactions.map(t=>t.date && t.date.slice(0,7)).filter(Boolean);
+  const latest = dated.length ? dated.sort().slice(-1)[0] : new Date().toISOString().slice(0,7);
+  const [ly, lm] = latest.split('-').map(Number);
+  const out = [];
+  for(let i=n-1;i>=0;i--) out.push(shiftMonthKey(ly, lm, -i));
+  return out;
+}
+function suggestBudget(activeMonths, catSpend){
+  if(activeMonths.length===0) return null;
+  const total = activeMonths.reduce((s,mk)=> s + (catSpend[mk]||0), 0);
+  if(total<=0) return null;
+  return { avg: total/activeMonths.length, months: activeMonths.length };
+}
 function renderBudgets(){
-  const monthKey = new Date().toISOString().slice(0,7);
-  const spent = {};
-  state.transactions.filter(t=>t.amount<0 && t.date.slice(0,7)===monthKey).forEach(t=>{
-    spent[t.category] = (spent[t.category]||0) + Math.abs(t.amount);
+  const monthKeys = budgetMonthKeys(BUDGET_HISTORY_MONTHS);
+  const currentKey = monthKeys[monthKeys.length-1];
+  const hasData = state.transactions.length>0;
+  const activeMonths = monthKeys.filter(mk=> state.transactions.some(t=>t.date.slice(0,7)===mk));
+
+  const introHint = document.getElementById('budgetsIntroHint');
+  introHint.textContent = hasData
+    ? `Showing ${monthLabel(currentKey,{month:'long',year:'numeric'})} — the latest month you've uploaded a statement for, with the last ${monthKeys.length} months as a quick history below each category. Categories with enough history get a one-tap budget suggestion based on your average.`
+    : "Set a monthly limit per category. Upload a statement to start seeing progress.";
+
+  const spendByCat = {}; // cat -> { monthKey: amount }
+  state.transactions.forEach(t=>{
+    if(t.amount>=0) return;
+    const mk = t.date.slice(0,7);
+    if(!monthKeys.includes(mk)) return;
+    spendByCat[t.category] = spendByCat[t.category] || {};
+    spendByCat[t.category][mk] = (spendByCat[t.category][mk]||0) + Math.abs(t.amount);
   });
+
   const wrap = document.getElementById('budgetList');
   const cats = Object.keys(state.categories).filter(c=>c!=='Income');
   wrap.innerHTML = cats.map(c=>{
     const budget = state.budgets[c] || 0;
-    const sp = spent[c] || 0;
+    const catSpend = spendByCat[c] || {};
+    const sp = catSpend[currentKey] || 0;
     const pct = budget>0 ? Math.min(100,(sp/budget)*100) : 0;
     const over = budget>0 && sp>budget;
+    const maxInWindow = Math.max(0, ...monthKeys.map(mk=>catSpend[mk]||0));
+    const suggestion = suggestBudget(activeMonths, catSpend);
+    const showSuggestion = suggestion && (!budget || Math.abs(budget - Math.round(suggestion.avg*1000)/1000) > 0.0009);
+
+    const history = monthKeys.map(mk=>{
+      const amt = catSpend[mk] || 0;
+      const isCurrent = mk===currentKey;
+      const isOver = budget>0 && amt>budget;
+      const heightPct = maxInWindow>0 ? Math.max(4, Math.round(amt/maxInWindow*100)) : 4;
+      return `<div class="hist-bar" title="${escapeHtml(monthLabel(mk,{month:'long',year:'numeric'}))}: ${escapeHtml(fmtMoney(-amt))}">
+        <div class="hist-bar-fill ${isCurrent?'current':''} ${isOver?'over':''}" style="height:${heightPct}%;${isCurrent && !isOver ? 'background:'+state.catColor[c]+';' : ''}"></div>
+      </div>`;
+    }).join('');
+
     return `<div class="budget-row" data-cat="${escapeHtml(c)}">
       <div class="budget-top">
         <span class="name"><span class="sw" style="background:${state.catColor[c]}"></span>${escapeHtml(c)}</span>
         <input type="number" inputmode="decimal" class="budget-edit" data-cat="${escapeHtml(c)}" value="${budget||''}" placeholder="0.000" step="0.001">
       </div>
       <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${over?'#F43F5E':state.catColor[c]}"></div></div>
-      <div class="budget-foot"><span class="spent-lbl">${fmtMoney(-sp)} spent this month</span><span class="pct-lbl">${budget>0? Math.round(pct)+'%':'no budget set'}</span></div>
+      <div class="budget-foot"><span class="spent-lbl">${fmtMoney(-sp)} spent in ${monthLabel(currentKey)}</span><span class="pct-lbl">${budget>0? Math.round(pct)+'%':'no budget set'}</span></div>
+      <div class="hist-row">${history}</div>
+      ${showSuggestion ? `<button class="btn ghost suggest-btn" data-suggest-cat="${escapeHtml(c)}" data-suggest-val="${suggestion.avg.toFixed(3)}">Avg over last ${suggestion.months} mo: <b>${escapeHtml(fmtMoney(-suggestion.avg))}</b> — use as budget</button>` : ''}
     </div>`;
   }).join('');
+
   wrap.querySelectorAll('.budget-edit').forEach(inp=>{
     inp.addEventListener('input',e=>{
       const cat = e.target.dataset.cat;
       state.budgets[cat] = parseFloat(e.target.value)||0;
       saveBudgets();
-      updateBudgetRowDisplay(cat, spent[cat]||0);
+      updateBudgetRowDisplay(cat);
+    });
+    inp.addEventListener('change', renderBudgets);
+  });
+  wrap.querySelectorAll('[data-suggest-cat]').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      const cat = btn.dataset.suggestCat;
+      state.budgets[cat] = Math.round(parseFloat(btn.dataset.suggestVal)*1000)/1000;
+      saveBudgets();
+      renderBudgets();
     });
   });
 }
-function updateBudgetRowDisplay(cat, sp){
+function updateBudgetRowDisplay(cat){
   let row = null;
   document.querySelectorAll('#budgetList .budget-row').forEach(r=>{ if(r.dataset.cat===cat) row = r; });
   if(!row) return;
+  const monthKeys = budgetMonthKeys(BUDGET_HISTORY_MONTHS);
+  const currentKey = monthKeys[monthKeys.length-1];
+  const catSpend = {};
+  state.transactions.forEach(t=>{
+    if(t.amount>=0 || t.category!==cat) return;
+    const mk = t.date.slice(0,7);
+    if(!monthKeys.includes(mk)) return;
+    catSpend[mk] = (catSpend[mk]||0) + Math.abs(t.amount);
+  });
   const budget = state.budgets[cat] || 0;
+  const sp = catSpend[currentKey] || 0;
   const pct = budget>0 ? Math.min(100,(sp/budget)*100) : 0;
   const over = budget>0 && sp>budget;
   const fill = row.querySelector('.bar-fill');
   fill.style.width = pct+'%';
   fill.style.background = over ? '#F43F5E' : (state.catColor[cat] || '#6C6B8C');
   row.querySelector('.pct-lbl').textContent = budget>0 ? Math.round(pct)+'%' : 'no budget set';
+  row.querySelectorAll('.hist-bar').forEach((el,i)=>{
+    const mk = monthKeys[i];
+    const amt = catSpend[mk] || 0;
+    const isCurrent = mk===currentKey;
+    const isOver = budget>0 && amt>budget;
+    const histFill = el.querySelector('.hist-bar-fill');
+    histFill.classList.toggle('over', isOver);
+    histFill.style.background = (isCurrent && !isOver) ? (state.catColor[cat]||'') : '';
+  });
+  const suggestBtn = row.querySelector('[data-suggest-cat]');
+  if(suggestBtn){
+    const val = parseFloat(suggestBtn.dataset.suggestVal);
+    suggestBtn.style.display = (!budget || Math.abs(budget-val)>0.0009) ? '' : 'none';
+  }
 }
 
 /* ============ rules ============ */
