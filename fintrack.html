@@ -607,6 +607,10 @@
       </div>
       <canvas id="catChart" height="220"></canvas>
       <div class="legend-list" id="catLegend"></div>
+      <button class="btn ghost" id="shareChartBtn" style="width:100%;margin-top:14px;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+        Share chart
+      </button>
     </div>
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:12px;">
@@ -704,6 +708,18 @@
   </div>
 </div>
 
+<div class="cat-popover" id="shareChartPopover">
+  <div class="cat-sheet">
+    <h3>Share chart</h3>
+    <img id="shareImagePreview" alt="Spending by category" style="width:100%;border-radius:12px;border:1px solid var(--line);display:block;">
+    <div style="display:flex;gap:10px;margin-top:14px;">
+      <button class="btn ghost" id="shareChartCloseBtn" style="flex:1;">Close</button>
+      <button class="btn ghost" id="shareImageDownloadBtn" style="flex:1;">Download</button>
+      <button class="btn primary" id="shareImageShareBtn" style="flex:1;">Share</button>
+    </div>
+  </div>
+</div>
+
 <div class="update-banner" id="updateBanner">
   <div class="msg"><strong>Update available</strong>A new version of FinTrack is ready.</div>
   <button class="reload-btn" id="updateReloadBtn">Reload</button>
@@ -769,6 +785,7 @@ let txFilter = { cat: "All", q: "", sort: "date_desc", range: "all", from: "", t
 let insightsFilter = { range: "month", from: "", to: "", cats: null, mode: "amount" }; // cats: null = all categories; mode: 'amount' | 'percent'
 let trendFilter = { cats: null }; // null = all categories shown in trend chart
 let catChart=null, trendChart=null;
+let lastInsightsSnapshot = null; // {labels, data, colors, mode, total, rangeLabel} - used to build the shareable chart image
 
 function rangeToDates(range, customFrom, customTo){
   const now = new Date();
@@ -1755,6 +1772,7 @@ function renderInsights(){
     `<div class="legend-item"><span class="sw" style="background:${colors[i]}"></span>${escapeHtml(l)}<span class="amt">${mode==='percent' ? pct(data[i]).toFixed(1)+'%' : fmtMoney(-data[i])}</span></div>`
   ).join('') || `<p class="hint">No expenses match the current filters for ${escapeHtml(rangeLabel)}.</p>`;
   updateInsCatBtnLabel();
+  lastInsightsSnapshot = { labels, data, colors, mode, total, rangeLabel };
 
   // monthly trend - full history, but filtered by the trend category selection
   const byMonth = {};
@@ -1853,6 +1871,180 @@ document.getElementById('insModeToggle').addEventListener('click',e=>{
   });
   renderInsights();
 });
+
+/* ============ share chart as image ============ */
+function loadImage(src){
+  return new Promise((resolve,reject)=>{
+    const img = new Image();
+    img.onload = ()=>resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+function roundRectPath(ctx,x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+}
+function fitText(ctx, text, maxWidth){
+  if(ctx.measureText(text).width <= maxWidth) return text;
+  let t = text;
+  while(t.length>1 && ctx.measureText(t+'…').width > maxWidth) t = t.slice(0,-1);
+  return t+'…';
+}
+async function buildShareImage(){
+  const snap = lastInsightsSnapshot;
+  if(!snap || !snap.labels.length || !catChart) return null;
+
+  const chartImg = await loadImage(catChart.toBase64Image());
+
+  const W = 680;
+  const padding = 32;
+  const headerH = 84;
+  const maxChartBox = 300;
+  const fit = Math.min(maxChartBox/chartImg.width, maxChartBox/chartImg.height, 1);
+  const dw = chartImg.width*fit, dh = chartImg.height*fit;
+  const chartY = headerH + 16;
+  const rowH = 30;
+  const legendTop = chartY + dh + 34;
+  const legendH = snap.labels.length*rowH;
+  const footerH = 36;
+  const H = legendTop + legendH + footerH;
+
+  const dpr = 2;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(W*dpr);
+  canvas.height = Math.round(H*dpr);
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const css = getComputedStyle(document.documentElement);
+  const v = (name, fallback) => (css.getPropertyValue(name).trim() || fallback);
+  const ink = v('--ink','#1E1B3F');
+  const paperRaised = v('--paper-raised','#FFFFFF');
+  const muted = v('--muted','#6C6B8C');
+  const line = v('--line','#E4E2F5');
+  const accent = v('--green','#6366F1');
+
+  ctx.fillStyle = paperRaised;
+  roundRectPath(ctx, 0, 0, W, H, 20);
+  ctx.fill();
+
+  ctx.textAlign = 'left';
+  ctx.fillStyle = ink;
+  ctx.font = '700 20px "Space Grotesk", sans-serif';
+  ctx.fillText('FinTrack', padding, padding+20);
+  ctx.fillStyle = accent;
+  ctx.font = '700 11px "IBM Plex Mono", monospace';
+  ctx.fillText('SPENDING BY CATEGORY', padding, padding+38);
+  ctx.fillStyle = muted;
+  ctx.font = '13px Inter, sans-serif';
+  const rangeText = (snap.rangeLabel||'').replace(/^./, ch=>ch.toUpperCase());
+  ctx.fillText(rangeText, padding, padding+56);
+
+  ctx.strokeStyle = line;
+  ctx.beginPath();
+  ctx.moveTo(padding, headerH);
+  ctx.lineTo(W-padding, headerH);
+  ctx.stroke();
+
+  const chartX = (W-dw)/2;
+  ctx.drawImage(chartImg, chartX, chartY, dw, dh);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = ink;
+  ctx.font = '700 16px "IBM Plex Mono", monospace';
+  ctx.fillText(fmtMoney(-snap.total), W/2, chartY+dh/2-2);
+  ctx.fillStyle = muted;
+  ctx.font = '600 9px Inter, sans-serif';
+  ctx.fillText('TOTAL', W/2, chartY+dh/2+13);
+
+  let y = legendTop;
+  const valueColWidth = 90;
+  snap.labels.forEach((label,i)=>{
+    ctx.fillStyle = snap.colors[i];
+    ctx.beginPath();
+    ctx.arc(padding+5, y-5, 5, 0, Math.PI*2);
+    ctx.fill();
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = ink;
+    ctx.font = '600 13px Inter, sans-serif';
+    const maxLabelWidth = W - padding*2 - 20 - valueColWidth;
+    ctx.fillText(fitText(ctx, label, maxLabelWidth), padding+20, y);
+
+    const valText = snap.mode==='percent'
+      ? (snap.total>0 ? (snap.data[i]/snap.total*100).toFixed(1)+'%' : '0%')
+      : fmtMoney(-snap.data[i]);
+    ctx.textAlign = 'right';
+    ctx.font = '600 13px "IBM Plex Mono", monospace';
+    ctx.fillStyle = muted;
+    ctx.fillText(valText, W-padding, y);
+    y += rowH;
+  });
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = muted;
+  ctx.font = '10px Inter, sans-serif';
+  ctx.fillText('Generated by FinTrack · '+new Date().toLocaleDateString(undefined,{day:'2-digit',month:'short',year:'numeric'}), W/2, H-padding+8);
+
+  return canvas;
+}
+function closeShareChartPopover(){
+  const pop = document.getElementById('shareChartPopover');
+  pop.classList.remove('open');
+  if(pop._shareUrl){ URL.revokeObjectURL(pop._shareUrl); pop._shareUrl = null; }
+  pop._shareBlob = null;
+}
+document.getElementById('shareChartBtn').addEventListener('click', async ()=>{
+  if(!lastInsightsSnapshot || !lastInsightsSnapshot.labels.length){
+    toast('Nothing to share yet — no expenses match the current filters.');
+    return;
+  }
+  const canvas = await buildShareImage();
+  if(!canvas) return;
+  canvas.toBlob(blob=>{
+    if(!blob) return;
+    const pop = document.getElementById('shareChartPopover');
+    if(pop._shareUrl) URL.revokeObjectURL(pop._shareUrl);
+    const url = URL.createObjectURL(blob);
+    pop._shareUrl = url;
+    pop._shareBlob = blob;
+    document.getElementById('shareImagePreview').src = url;
+    document.getElementById('shareImageShareBtn').style.display = navigator.share ? '' : 'none';
+    pop.classList.add('open');
+  });
+});
+document.getElementById('shareImageDownloadBtn').addEventListener('click',()=>{
+  const pop = document.getElementById('shareChartPopover');
+  if(!pop._shareUrl) return;
+  const a = document.createElement('a');
+  a.href = pop._shareUrl;
+  a.download = 'fintrack-spending.png';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+});
+document.getElementById('shareImageShareBtn').addEventListener('click', async ()=>{
+  const pop = document.getElementById('shareChartPopover');
+  if(!pop._shareBlob) return;
+  const file = new File([pop._shareBlob], 'fintrack-spending.png', {type:'image/png'});
+  if(navigator.canShare && !navigator.canShare({files:[file]})){
+    toast('Sharing images isn\'t supported on this browser — use Download instead.');
+    return;
+  }
+  try{ await navigator.share({ files:[file], title:'FinTrack — Spending by category' }); }
+  catch(e){ /* user cancelled the share sheet */ }
+});
+document.getElementById('shareChartCloseBtn').addEventListener('click', closeShareChartPopover);
+document.getElementById('shareChartPopover').addEventListener('click', e=>{
+  if(e.target.id==='shareChartPopover') closeShareChartPopover();
+});
+
 document.getElementById('insCatBtn').addEventListener('click',()=>{
   const list = document.getElementById('insCatOptList');
   const allCats = Object.keys(state.categories).filter(c=>c!=='Income');
