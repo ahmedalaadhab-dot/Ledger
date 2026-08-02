@@ -586,8 +586,7 @@
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
         <h2 class="section-title" style="font-size:13px;margin:0;">Spending by category</h2>
         <select class="range-select" id="insRange" aria-label="Time range" style="flex:none;width:auto;">
-          <option value="month" selected>This month</option>
-          <option value="lastmonth">Last month</option>
+          <option value="lastmonth" selected>Last month</option>
           <option value="3m">Last 3 months</option>
           <option value="6m">Last 6 months</option>
           <option value="year">This year</option>
@@ -782,7 +781,7 @@ let state = {
 let staging = [];             // rows pending review
 let activeView = "upload";
 let txFilter = { cat: "All", q: "", sort: "date_desc", range: "all", from: "", to: "" };
-let insightsFilter = { range: "month", from: "", to: "", cats: null, mode: "amount" }; // cats: null = all categories; mode: 'amount' | 'percent'
+let insightsFilter = { range: "lastmonth", from: "", to: "", cats: null, mode: "amount" }; // cats: null = all categories; mode: 'amount' | 'percent'
 let trendFilter = { cats: null }; // null = all categories shown in trend chart
 let catChart=null, trendChart=null;
 let lastInsightsSnapshot = null; // {labels, data, colors, mode, total, rangeLabel} - used to build the shareable chart image
