@@ -582,6 +582,7 @@
       <div class="sum-card"><div class="lbl">Expenses</div><div class="val neg" id="insExpense">—</div></div>
       <div class="sum-card"><div class="lbl">Net</div><div class="val" id="insNet">—</div></div>
     </div>
+    <p class="hint" style="margin-top:-8px;">Matches the time range and categories selected for the chart below - uncheck categories like "Transfers" to keep money moved between your own accounts out of these totals.</p>
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
         <h2 class="section-title" style="font-size:13px;margin:0;">Spending by category</h2>
@@ -1731,8 +1732,16 @@ document.getElementById('exportBtn').addEventListener('click',()=>{
 function renderInsights(){
   const {from,to} = rangeToDates(insightsFilter.range, insightsFilter.from, insightsFilter.to);
   const periodTx = state.transactions.filter(t=>inRange(t.date, from, to));
-  const income = periodTx.filter(t=>t.amount>0).reduce((s,t)=>s+t.amount,0);
-  const expense = periodTx.filter(t=>t.amount<0).reduce((s,t)=>s+t.amount,0);
+  // Income/Expenses/Net mirror the same category selection as the chart below,
+  // so money moved between the user's own accounts (e.g. an unchecked
+  // "Transfers" category) doesn't inflate either figure. "Income" itself isn't
+  // a checkbox in that picker (the chart only ever shows spending), so it's
+  // always counted in full rather than silently zeroing out real income.
+  const inCatFilter = t => !insightsFilter.cats || insightsFilter.cats.has(t.category);
+  const incomeTx = periodTx.filter(t=> t.amount>0 && (t.category==='Income' || inCatFilter(t)));
+  const scoped = periodTx.filter(t=> t.amount<0 && inCatFilter(t));
+  const income = incomeTx.reduce((s,t)=>s+t.amount,0);
+  const expense = scoped.reduce((s,t)=>s+t.amount,0);
   const net = income+expense;
   document.getElementById('insIncome').textContent = fmtMoney(income);
   document.getElementById('insExpense').textContent = fmtMoney(expense);
@@ -1740,12 +1749,7 @@ function renderInsights(){
   insNet.textContent = fmtMoney(net);
   insNet.className = 'val mono ' + (net>=0?'pos':'neg');
 
-  // category breakdown respects the time range + category picker above the chart
-  const scoped = state.transactions.filter(t=>
-    t.amount<0 &&
-    inRange(t.date, from, to) &&
-    (!insightsFilter.cats || insightsFilter.cats.has(t.category))
-  );
+  // category breakdown for the chart reuses the exact same expense set as the header above
   const byCat = {};
   scoped.forEach(t=>{ byCat[t.category] = (byCat[t.category]||0) + Math.abs(t.amount); });
   const labels = Object.keys(byCat).sort((a,b)=>byCat[b]-byCat[a]);
