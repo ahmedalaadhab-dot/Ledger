@@ -582,7 +582,7 @@
       <div class="sum-card"><div class="lbl">Expenses</div><div class="val neg" id="insExpense">—</div></div>
       <div class="sum-card"><div class="lbl">Net</div><div class="val" id="insNet">—</div></div>
     </div>
-    <p class="hint" style="margin-top:-8px;">Matches the time range and categories selected for the chart below - uncheck categories like "Transfers" to keep money moved between your own accounts out of these totals.</p>
+    <button class="btn ghost" id="summaryCatBtn" style="width:100%;margin-bottom:14px;font-size:12px;">Categories: All</button>
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
         <h2 class="section-title" style="font-size:13px;margin:0;">Spending by category</h2>
@@ -666,6 +666,20 @@
     </div>
     <button class="btn ghost" id="insCatDefaultBtn" style="width:100%;margin-top:10px;font-size:12px;">Set as default</button>
     <p class="hint" id="insCatDefaultHint" style="margin:6px 0 0;text-align:center;"></p>
+  </div>
+</div>
+
+<div class="cat-popover" id="summaryCatPopover">
+  <div class="cat-sheet">
+    <h3>Summary: include categories</h3>
+    <p class="hint" style="margin:-4px 0 10px;">Choose which categories count toward Income, Expenses and Net above. Uncheck "Transfers" to keep money moved between your own accounts out of these totals.</p>
+    <div id="summaryCatOptList"></div>
+    <div style="display:flex;gap:10px;margin-top:14px;">
+      <button class="btn ghost" id="summaryCatAllBtn">Select all</button>
+      <button class="btn primary block" id="summaryCatApplyBtn">Apply</button>
+    </div>
+    <button class="btn ghost" id="summaryCatDefaultBtn" style="width:100%;margin-top:10px;font-size:12px;">Set as default</button>
+    <p class="hint" id="summaryCatDefaultHint" style="margin:6px 0 0;text-align:center;"></p>
   </div>
 </div>
 
@@ -782,6 +796,7 @@ let state = {
   catColor: {},                // name -> color (assigned)
   ibanMap: {},                  // IBAN -> category, learned from the first transfer to that account
   insDefaultCats: null,         // array of category names saved as the Insights chart's default selection (null = all)
+  summaryDefaultCats: null,      // same for the Income/Expenses/Net summary cards
   trendDefaultCats: null,        // same for the monthly trend chart
   trendDefaultShowSavings: false // whether the trend chart's Savings bar is on by default
 };
@@ -789,6 +804,7 @@ let staging = [];             // rows pending review
 let activeView = "upload";
 let txFilter = { cat: "All", q: "", sort: "date_desc", range: "all", from: "", to: "" };
 let insightsFilter = { range: "lastmonth", from: "", to: "", cats: null, mode: "amount" }; // cats: null = all categories; mode: 'amount' | 'percent'
+let summaryFilter = { cats: null }; // categories included in the Income/Expenses/Net summary cards - independent of insightsFilter.cats
 let trendFilter = { cats: null, showSavings: false }; // cats: null = all categories shown in trend chart; showSavings: optional Income-Expenses bar stacked over Expenses
 let catChart=null, trendChart=null;
 let lastInsightsSnapshot = null; // {labels, data, colors, mode, total, rangeLabel} - used to build the shareable chart image
@@ -925,6 +941,7 @@ async function loadState(){
   try{ const cc = await dbGet('ledger:catColor'); if(cc) state.catColor = cc; }catch(e){}
   try{ const im = await dbGet('ledger:ibanMap'); if(im) state.ibanMap = im; }catch(e){}
   try{ const dc = await dbGet('ledger:insDefaultCats'); if(dc) state.insDefaultCats = dc; }catch(e){}
+  try{ const sc = await dbGet('ledger:summaryDefaultCats'); if(sc) state.summaryDefaultCats = sc; }catch(e){}
   try{ const td = await dbGet('ledger:trendDefaultCats'); if(td) state.trendDefaultCats = td; }catch(e){}
   try{ const tss = await dbGet('ledger:trendDefaultShowSavings'); if(tss!==undefined) state.trendDefaultShowSavings = tss; }catch(e){}
   if(!state.categories || Object.keys(state.categories).length===0){
@@ -936,6 +953,12 @@ async function loadState(){
     insightsFilter.cats = (state.insDefaultCats.length===0 || state.insDefaultCats.length===allCats.length)
       ? null
       : new Set(state.insDefaultCats.filter(c=>allCats.includes(c)));
+  }
+  if(state.summaryDefaultCats && Array.isArray(state.summaryDefaultCats)){
+    const allCats = Object.keys(state.categories);
+    summaryFilter.cats = (state.summaryDefaultCats.length===0 || state.summaryDefaultCats.length===allCats.length)
+      ? null
+      : new Set(state.summaryDefaultCats.filter(c=>allCats.includes(c)));
   }
   if(state.trendDefaultCats && Array.isArray(state.trendDefaultCats)){
     const allCats = Object.keys(state.categories);
@@ -957,6 +980,7 @@ function savePalette(){ persist('ledger:palette', state.palette); }
 function saveCatColor(){ persist('ledger:catColor', state.catColor); }
 function saveIbanMap(){ persist('ledger:ibanMap', state.ibanMap); }
 function saveInsDefaultCats(){ persist('ledger:insDefaultCats', state.insDefaultCats); }
+function saveSummaryDefaultCats(){ persist('ledger:summaryDefaultCats', state.summaryDefaultCats); }
 function saveTrendDefaultCats(){ persist('ledger:trendDefaultCats', state.trendDefaultCats); }
 function saveTrendDefaultShowSavings(){ persist('ledger:trendDefaultShowSavings', state.trendDefaultShowSavings); }
 
@@ -1732,24 +1756,25 @@ document.getElementById('exportBtn').addEventListener('click',()=>{
 function renderInsights(){
   const {from,to} = rangeToDates(insightsFilter.range, insightsFilter.from, insightsFilter.to);
   const periodTx = state.transactions.filter(t=>inRange(t.date, from, to));
-  // Income/Expenses/Net mirror the same category selection as the chart below,
-  // so money moved between the user's own accounts (e.g. an unchecked
-  // "Transfers" category) doesn't inflate either figure. "Income" itself isn't
-  // a checkbox in that picker (the chart only ever shows spending), so it's
-  // always counted in full rather than silently zeroing out real income.
-  const inCatFilter = t => !insightsFilter.cats || insightsFilter.cats.has(t.category);
-  const incomeTx = periodTx.filter(t=> t.amount>0 && (t.category==='Income' || inCatFilter(t)));
-  const scoped = periodTx.filter(t=> t.amount<0 && inCatFilter(t));
-  const income = incomeTx.reduce((s,t)=>s+t.amount,0);
-  const expense = scoped.reduce((s,t)=>s+t.amount,0);
+
+  // summary cards use their own independent category selection (summaryFilter),
+  // separate from the chart's own category picker below
+  const summaryTx = periodTx.filter(t=> !summaryFilter.cats || summaryFilter.cats.has(t.category));
+  const income = summaryTx.filter(t=>t.amount>0).reduce((s,t)=>s+t.amount,0);
+  const expense = summaryTx.filter(t=>t.amount<0).reduce((s,t)=>s+t.amount,0);
   const net = income+expense;
   document.getElementById('insIncome').textContent = fmtMoney(income);
   document.getElementById('insExpense').textContent = fmtMoney(expense);
   const insNet = document.getElementById('insNet');
   insNet.textContent = fmtMoney(net);
   insNet.className = 'val mono ' + (net>=0?'pos':'neg');
+  updateSummaryCatBtnLabel();
 
-  // category breakdown for the chart reuses the exact same expense set as the header above
+  // category breakdown respects the time range + category picker above the chart
+  const scoped = periodTx.filter(t=>
+    t.amount<0 &&
+    (!insightsFilter.cats || insightsFilter.cats.has(t.category))
+  );
   const byCat = {};
   scoped.forEach(t=>{ byCat[t.category] = (byCat[t.category]||0) + Math.abs(t.amount); });
   const labels = Object.keys(byCat).sort((a,b)=>byCat[b]-byCat[a]);
@@ -2123,6 +2148,50 @@ document.getElementById('insCatDefaultBtn').addEventListener('click',()=>{
 });
 document.getElementById('insCatPopover').addEventListener('click',e=>{ if(e.target.id==='insCatPopover') document.getElementById('insCatPopover').classList.remove('open'); });
 
+function updateSummaryCatBtnLabel(){
+  const btn = document.getElementById('summaryCatBtn');
+  if(!btn) return;
+  if(!summaryFilter.cats) btn.textContent = 'Categories: All';
+  else btn.textContent = 'Categories: '+summaryFilter.cats.size+' selected';
+}
+document.getElementById('summaryCatBtn').addEventListener('click',()=>{
+  const list = document.getElementById('summaryCatOptList');
+  const allCats = Object.keys(state.categories);
+  list.innerHTML = allCats.map(c=>{
+    const checked = !summaryFilter.cats || summaryFilter.cats.has(c);
+    return `<label class="cat-opt"><input type="checkbox" data-cat="${escapeHtml(c)}" ${checked?'checked':''}><span class="sw" style="background:${state.catColor[c]}"></span>${escapeHtml(c)}</label>`;
+  }).join('');
+  updateSummaryCatDefaultHint();
+  document.getElementById('summaryCatPopover').classList.add('open');
+});
+document.getElementById('summaryCatAllBtn').addEventListener('click',()=>{
+  document.querySelectorAll('#summaryCatOptList input[type=checkbox]').forEach(cb=>cb.checked=true);
+});
+document.getElementById('summaryCatApplyBtn').addEventListener('click',()=>{
+  const allCats = Object.keys(state.categories);
+  const checked = [...document.querySelectorAll('#summaryCatOptList input[type=checkbox]:checked')].map(cb=>cb.dataset.cat);
+  summaryFilter.cats = (checked.length===0 || checked.length===allCats.length) ? null : new Set(checked);
+  document.getElementById('summaryCatPopover').classList.remove('open');
+  renderInsights();
+});
+function updateSummaryCatDefaultHint(){
+  const hint = document.getElementById('summaryCatDefaultHint');
+  if(!hint) return;
+  const allCats = Object.keys(state.categories);
+  if(!state.summaryDefaultCats) hint.textContent = '';
+  else if(state.summaryDefaultCats.length===0 || state.summaryDefaultCats.length===allCats.length) hint.textContent = 'Default: all categories';
+  else hint.textContent = 'Default: '+state.summaryDefaultCats.length+' selected';
+}
+document.getElementById('summaryCatDefaultBtn').addEventListener('click',()=>{
+  const allCats = Object.keys(state.categories);
+  const checked = [...document.querySelectorAll('#summaryCatOptList input[type=checkbox]:checked')].map(cb=>cb.dataset.cat);
+  state.summaryDefaultCats = (checked.length===0 || checked.length===allCats.length) ? [] : checked;
+  saveSummaryDefaultCats();
+  updateSummaryCatDefaultHint();
+  toast('Saved as the default category selection');
+});
+document.getElementById('summaryCatPopover').addEventListener('click',e=>{ if(e.target.id==='summaryCatPopover') document.getElementById('summaryCatPopover').classList.remove('open'); });
+
 /* ============ budgets ============ */
 const BUDGET_HISTORY_MONTHS = 6;
 
@@ -2342,7 +2411,12 @@ function renameCategory(oldName, newName){
     state.insDefaultCats = state.insDefaultCats.map(c=> c===oldName?newName:c);
     saveInsDefaultCats();
   }
+  if(Array.isArray(state.summaryDefaultCats)){
+    state.summaryDefaultCats = state.summaryDefaultCats.map(c=> c===oldName?newName:c);
+    saveSummaryDefaultCats();
+  }
   if(insightsFilter.cats && insightsFilter.cats.has(oldName)){ insightsFilter.cats.delete(oldName); insightsFilter.cats.add(newName); }
+  if(summaryFilter.cats && summaryFilter.cats.has(oldName)){ summaryFilter.cats.delete(oldName); summaryFilter.cats.add(newName); }
   if(trendFilter.cats && trendFilter.cats.has(oldName)){ trendFilter.cats.delete(oldName); trendFilter.cats.add(newName); }
   saveCategories(); saveCatColor(); saveBudgets(); saveIbanMap(); saveTransactions();
   toast('Renamed "'+oldName+'" to "'+newName+'"');
