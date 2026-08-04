@@ -674,7 +674,7 @@
     <label class="cat-opt" style="border-bottom:1px dotted var(--line-strong);padding-bottom:12px;margin-bottom:10px;">
       <input type="checkbox" id="trendShowSavings">
       <span class="sw" style="background:var(--green);"></span>
-      Savings line (Income − Expenses)
+      Savings bar (Income − Expenses, stacked over Expenses)
     </label>
     <p class="hint" style="margin:-4px 0 10px;">Uncheck categories like "Transfers" to see only true spending in the chart.</p>
     <div id="trendCatOptList"></div>
@@ -782,13 +782,13 @@ let state = {
   ibanMap: {},                  // IBAN -> category, learned from the first transfer to that account
   insDefaultCats: null,         // array of category names saved as the Insights chart's default selection (null = all)
   trendDefaultCats: null,        // same for the monthly trend chart
-  trendDefaultShowSavings: false // whether the trend chart's Savings line is on by default
+  trendDefaultShowSavings: false // whether the trend chart's Savings bar is on by default
 };
 let staging = [];             // rows pending review
 let activeView = "upload";
 let txFilter = { cat: "All", q: "", sort: "date_desc", range: "all", from: "", to: "" };
 let insightsFilter = { range: "lastmonth", from: "", to: "", cats: null, mode: "amount" }; // cats: null = all categories; mode: 'amount' | 'percent'
-let trendFilter = { cats: null, showSavings: false }; // cats: null = all categories shown in trend chart; showSavings: optional Income-Expenses line
+let trendFilter = { cats: null, showSavings: false }; // cats: null = all categories shown in trend chart; showSavings: optional Income-Expenses bar stacked over Expenses
 let catChart=null, trendChart=null;
 let lastInsightsSnapshot = null; // {labels, data, colors, mode, total, rangeLabel} - used to build the shareable chart image
 
@@ -1800,21 +1800,19 @@ function renderInsights(){
     const expenseColor = trendCss.getPropertyValue('--rust').trim() || '#F43F5E';
     const savingsColor = trendCss.getPropertyValue('--green').trim() || '#6366F1';
     const trendDatasets = [
-      {label:'Income', data: months.map(m=>byMonth[m].inc), backgroundColor:incomeColor},
-      {label:'Expenses', data: months.map(m=>byMonth[m].exp), backgroundColor:expenseColor}
+      {label:'Income', data: months.map(m=>byMonth[m].inc), backgroundColor:incomeColor, stack:'income'},
+      {label:'Expenses', data: months.map(m=>byMonth[m].exp), backgroundColor:expenseColor, stack:'spend'}
     ];
     if(trendFilter.showSavings){
+      // Stacked on the same bar as Expenses (same 'spend' stack), so the two
+      // segments together add up to Income - the savings bar sits directly
+      // over the expenses bar, colored differently, and stays independently
+      // hoverable like every other bar/segment in the chart.
       trendDatasets.push({
-        type:'line',
         label:'Savings',
         data: months.map(m=> byMonth[m].inc - byMonth[m].exp),
-        borderColor: savingsColor,
         backgroundColor: savingsColor,
-        pointBackgroundColor: savingsColor,
-        borderWidth:2,
-        tension:0.35,
-        pointRadius:3,
-        fill:false
+        stack:'spend'
       });
     }
     trendChart = new Chart(tctx,{
@@ -1823,7 +1821,12 @@ function renderInsights(){
         labels: months.map(m=>{ const [y,mo]=m.split('-'); return new Date(+y,(+mo)-1,1).toLocaleDateString(undefined,{month:'short',year:'2-digit'}); }),
         datasets: trendDatasets
       },
-      options:{ scales:{ y:{ beginAtZero:true } }, plugins:{ legend:{ position:'bottom', labels:{boxWidth:10,font:{size:11}} } } }
+      options:{
+        scales: trendFilter.showSavings
+          ? { x:{ stacked:true }, y:{ stacked:true, beginAtZero:true } }
+          : { y:{ beginAtZero:true } },
+        plugins:{ legend:{ position:'bottom', labels:{boxWidth:10,font:{size:11}} } }
+      }
     });
   }
   updateTrendCatBtnLabel();
