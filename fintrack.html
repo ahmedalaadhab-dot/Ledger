@@ -645,6 +645,11 @@
       <p class="hint" style="margin-top:0;">Fawri+, BenefitPay and other transfers aren't auto-categorized since they're used for everything. Pick a category the first time you see one and FinTrack remembers it for that IBAN.</p>
       <div id="ibanRuleList"></div>
     </div>
+    <div class="card">
+      <h2 class="section-title" style="font-size:13px;">Backup your data</h2>
+      <p class="hint" style="margin-top:0;">Everything FinTrack stores on this device - transactions, categories, budgets and settings - lives only in this browser. Download a backup file now and then and keep it somewhere safe.</p>
+      <button class="btn ghost" id="backupBtn" style="width:100%;">Download backup</button>
+    </div>
   </section>
 
 </main>
@@ -1750,6 +1755,34 @@ document.getElementById('exportBtn').addEventListener('click',()=>{
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = 'fintrack-export.csv'; a.click();
   toast('Exported '+txs.length+' transaction'+(txs.length===1?'':'s'));
+});
+
+/* ============ backup ============ */
+document.getElementById('backupBtn').addEventListener('click',()=>{
+  const backup = {
+    app: 'FinTrack',
+    backupVersion: 1,
+    exportedAt: new Date().toISOString(),
+    data: {
+      transactions: state.transactions,
+      categories: state.categories,
+      budgets: state.budgets,
+      currency: state.currency,
+      theme: state.theme,
+      palette: state.palette,
+      catColor: state.catColor,
+      ibanMap: state.ibanMap,
+      insDefaultCats: state.insDefaultCats,
+      summaryDefaultCats: state.summaryDefaultCats,
+      trendDefaultCats: state.trendDefaultCats,
+      trendDefaultShowSavings: state.trendDefaultShowSavings
+    }
+  };
+  const blob = new Blob([JSON.stringify(backup, null, 2)], {type:'application/json'});
+  const a = document.createElement('a');
+  const stamp = new Date().toISOString().slice(0,10);
+  a.href = URL.createObjectURL(blob); a.download = 'fintrack-backup-'+stamp+'.json'; a.click();
+  toast('Backup downloaded ('+state.transactions.length+' transaction'+(state.transactions.length===1?'':'s')+')');
 });
 
 /* ============ insights ============ */
